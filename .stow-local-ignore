@@ -1,0 +1,12 @@
+^/\.git$
+^/\.gitignore$
+^/\.ignore$
+^/\.idea$
+^/\.opencode$
+^/tmp$
+^/node_modules$
+^/AGENTS\.md$
+^/package\.json$
+^/package-lock\.json$
+^/tsconfig\.json$
+.*\.iml
