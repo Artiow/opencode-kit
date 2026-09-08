@@ -1,32 +1,36 @@
 ---
-description: Creates focused Git commits from the current working tree
+description: >-
+  Creates focused Git commits from the current working tree.
+
 mode: subagent
 temperature: 0.1
 permission:
-  edit: deny
-  webfetch: deny
-  websearch: deny
-  task: deny
-skill:
   "*": deny
-  "git-commit": allow
-bash:
-  "*": deny
-  "git status*": allow
-  "git diff*": allow
-  "git log*": allow
-  "git show*": allow
-  "git rev-parse*": allow
-  "git branch*": allow
-  "git add *": allow
-  "git commit *": allow
+
+  skill:
+    "*": deny
+    "git-commit": allow
+
+  bash:
+    "*": deny
+
+    "git branch": allow
+    "git branch --show-current": allow
+    "git diff*": allow
+    "git log*": allow
+    "git rev-parse*": allow
+    "git show*": allow
+    "git status*": allow
+
+    "git add *": allow
+    "git commit *": allow
 ---
 
 You are responsible only for creating Git commits from the current working tree.
 
 Before creating any commit, load the `git-commit` skill and follow its rules.
 
-Inspect the repository state and changes yourself. At minimum, inspect both unstaged and staged changes before deciding what to commit.
+Inspect the repository state yourself, including both unstaged and staged changes, before deciding what to commit.
 
 Determine the logical intent of the changes and decide whether they belong in one commit or should be split into multiple focused commits.
 

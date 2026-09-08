@@ -116,7 +116,7 @@ Use the body for details that matter later:
 * why the change exists
 * important implementation notes
 * migration notes
-* constraints, caveats, side effects
+* constraints, risks, side effects
 
 Keep it compact. Do not dump PR commentary, temporary thoughts, or implementation diary text.
 
@@ -144,10 +144,10 @@ Prefer multiple focused commits over one mixed commit.
 
 Split commits when one change includes different intents, for example:
 
-* bug fix + refactor
-* feature + formatting cleanup
-* dependency bump + unrelated code edits
-* production code + unrelated test cleanup
+* bug fix and refactor
+* feature and formatting cleanup
+* dependency bump and unrelated code edits
+* production code and unrelated test cleanup
 
 One commit should represent one main reason to exist.
 

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "insight": {
+      "permission": {
+        "skill": {
+          "customize-opencode": "allow"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "rider": {
+      "enabled": true
+    },
+    "ddg-search": {
+      "enabled": true
+    }
+  }
+}

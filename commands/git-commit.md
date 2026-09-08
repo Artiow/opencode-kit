@@ -4,7 +4,7 @@ agent: git-commit
 subtask: true
 ---
 
-Create appropriate commit(s) from the current working tree.
+Create one or more appropriate commits from the current working tree.
 
 Additional instructions from the user:
 
