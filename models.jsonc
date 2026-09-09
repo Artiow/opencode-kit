@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  /*
+   * OPENCODE_MODEL_FLAGSHIP — the primary, most capable model.
+   * OPENCODE_MODEL_UTILITY — a cheaper or faster model for auxiliary tasks.
+   * OPENCODE_MODEL_LIGHT — the lightweight model for lightweight tasks.
+   */
+
+  "agent": {
+    // primary
+    "build": {
+      "model": "{env:OPENCODE_MODEL_FLAGSHIP}"
+    },
+    "plan": {
+      "model": "{env:OPENCODE_MODEL_FLAGSHIP}"
+    },
+    "insight": {
+      "model": "{env:OPENCODE_MODEL_FLAGSHIP}"
+    },
+
+    // subagents
+    "git-commit": {
+      "model": "{env:OPENCODE_MODEL_UTILITY}",
+      "variant": "default"
+    },
+    "web-research": {
+      "model": "{env:OPENCODE_MODEL_FLAGSHIP}",
+      "variant": "default",
+      "steps": 8
+    }
+  },
+
+  "model": "{env:OPENCODE_MODEL_FLAGSHIP}",
+  "small_model": "{env:OPENCODE_MODEL_LIGHT}"
+}

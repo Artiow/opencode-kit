@@ -5,6 +5,7 @@
 ^/\.ignore$
 ^/\.opencode$
 ^/AGENTS\.md$
+^/README\.md$
 ^/node_modules$
 ^/package-lock\.json$
 ^/package\.json$

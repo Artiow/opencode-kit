@@ -9,7 +9,7 @@ mode: subagent
 permission:
   "*": deny
 
-  "ddg-search_*": allow
+  "duckduckgo_*": allow
   webfetch: allow
 ---
 
@@ -19,8 +19,8 @@ Your job is to establish externally verifiable facts, not to produce the final u
 
 Use only internet-search and page-reading tools:
 
-* Use `ddg-search_search` when you need to discover relevant pages.
-* Use `ddg-search_fetch_content` when you need compact extracted page text, pagination, or the DuckDuckGo MCP browser/curl backend.
+* Use `duckduckgo_search` when you need to discover relevant pages.
+* Use `duckduckgo_fetch_content` when you need compact extracted page text, pagination, or the DuckDuckGo MCP browser/curl backend.
 * Use built-in `webfetch` when preserving Markdown structure, code blocks, raw files, or HTML/text format matters.
 
 Choose the tool that best fits the task.

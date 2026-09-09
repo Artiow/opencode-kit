@@ -6,7 +6,7 @@ This repository is the source of truth for version-controlled global OpenCode ex
 
 - Edit managed resources here, never through their symlinks under `~/.config/opencode/`.
 - Do not modify, move, delete, or import unmanaged files from `~/.config/opencode/` unless explicitly asked.
-- Never copy the global `~/.config/opencode/opencode.json` into this repository or replace `.opencode/opencode.json` with it.
+- Never copy the global `~/.config/opencode/opencode.jsonc` (or `opencode.json`) into this repository or replace `.opencode/opencode.jsonc` with it.
 - Never commit credentials, tokens, API keys, or other secrets.
 - Do not commit or push unless explicitly asked.
 
@@ -15,6 +15,29 @@ This repository is the source of truth for version-controlled global OpenCode ex
 Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` provide global OpenCode capabilities.
 
 Before creating or modifying an OpenCode resource, load the built-in `customize-opencode` skill and use it as the primary reference for current formats and capabilities. Prefer the simplest suitable resource type, and keep reusable procedures in skills rather than duplicating them across agents.
+
+## Configuration layers
+
+`~/.config/opencode/opencode.jsonc` is a machine-specific unmanaged file for `server`, `mcp`, and other local settings. Do not import or modify it as part of repository maintenance.
+
+The repository-root `models.jsonc` is managed by Stow as `~/.config/opencode/models.jsonc` and loaded through `OPENCODE_CONFIG=${HOME}/.config/opencode/models.jsonc`. OpenCode merges the effective configuration in this order:
+
+```text
+~/.config/opencode/opencode.jsonc
+        +
+$OPENCODE_CONFIG -> ~/.config/opencode/models.jsonc
+        +
+project-level opencode.json(c), if present
+```
+
+Model roles in `models.jsonc` must use `{env:...}` interpolation. The local environment must provide:
+
+- `OPENCODE_CONFIG` - path to the Stow-managed model profile.
+- `OPENCODE_MODEL_FLAGSHIP` - primary, most capable model.
+- `OPENCODE_MODEL_UTILITY` - cheaper or faster model for auxiliary tasks and agents.
+- `OPENCODE_MODEL_LIGHT` - lightweight model for lightweight tasks.
+
+Concrete model IDs and files containing environment values are intentionally local configuration. Never add them to Git or Stow.
 
 `.opencode/` is repository-local configuration used only while working on this project. It is not a global resource, must never be deployed through Stow, and must remain excluded by `.stow-local-ignore`.
 

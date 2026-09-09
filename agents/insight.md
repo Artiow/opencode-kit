@@ -7,7 +7,7 @@ mode: primary
 permission:
   "*": ask
 
-  "ddg-search_*": deny
+  "duckduckgo_*": deny
   edit: deny
 
   glob: allow
