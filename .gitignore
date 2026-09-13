@@ -3,5 +3,7 @@
 
 /node_modules/
 
+/.opencode/opencode.json
+/.opencode/opencode.jsonc
 /.opencode/plans/
 /tmp/

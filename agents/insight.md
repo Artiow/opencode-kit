@@ -15,24 +15,6 @@ permission:
   list: allow
   read: allow
 
-  "rider_execute_*": deny
-  rider_build_project: deny
-  rider_create_new_file: deny
-  rider_reformat_file: deny
-  rider_rename_refactoring: deny
-  rider_replace_text_in_file: deny
-
-  rider_get_file_text_by_path: deny
-  rider_get_file_problems: allow
-  rider_get_project_dependencies: allow
-  rider_get_project_modules: allow
-  rider_get_symbol_info: allow
-  rider_read_file: allow
-  rider_search_file: allow
-  rider_search_regex: allow
-  rider_search_symbol: allow
-  rider_search_text: allow
-
   question: allow
   todowrite: allow
 

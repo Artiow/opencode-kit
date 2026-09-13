@@ -6,13 +6,13 @@ This repository is the source of truth for version-controlled global OpenCode ex
 
 - Edit managed resources here, never through their symlinks under `~/.config/opencode/`.
 - Do not modify, move, delete, or import unmanaged files from `~/.config/opencode/` unless explicitly asked.
-- Never copy the global `~/.config/opencode/opencode.jsonc` (or `opencode.json`) into this repository or replace `.opencode/opencode.jsonc` with it.
+- Never copy the global `~/.config/opencode/opencode.jsonc` (or `opencode.json`) into this repository or replace either project config with it.
 - Never commit credentials, tokens, API keys, or other secrets.
 - Do not commit or push unless explicitly asked.
 
 ## OpenCode resources
 
-Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` provide global OpenCode capabilities.
+Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` provide global OpenCode capabilities and are deployed through Stow. Resources under `.opencode/` are repo-local, apply only while working in `opencode-kit`, and remain tracked unless explicitly designated as local state.
 
 Before creating or modifying an OpenCode resource, load the built-in `customize-opencode` skill and use it as the primary reference for current formats and capabilities. Prefer the simplest suitable resource type, and keep reusable procedures in skills rather than duplicating them across agents.
 
@@ -27,8 +27,12 @@ The repository-root `models.jsonc` is managed by Stow as `~/.config/opencode/mod
         +
 $OPENCODE_CONFIG -> ~/.config/opencode/models.jsonc
         +
-project-level opencode.json(c), if present
+opencode.jsonc (shared project config)
+        +
+.opencode/opencode.json(c) (local project override)
 ```
+
+The root `opencode.jsonc` is the canonical shared project config: it is committed and contains only portable settings that must work for every clone. `.opencode/opencode.jsonc` is the higher-priority machine/user-specific override; it and `.opencode/opencode.json` are Git-ignored and must contain only local differences without duplicating the shared config.
 
 Model roles in `models.jsonc` must use `{env:...}` interpolation. The local environment must provide:
 
@@ -39,7 +43,7 @@ Model roles in `models.jsonc` must use `{env:...}` interpolation. The local envi
 
 Concrete model IDs and files containing environment values are intentionally local configuration. Never add them to Git or Stow.
 
-`.opencode/` is repository-local configuration used only while working on this project. It is not a global resource, must never be deployed through Stow, and must remain excluded by `.stow-local-ignore`.
+Neither `opencode.jsonc` nor `.opencode/opencode.jsonc` may be deployed to `~/.config/opencode/`. The root config must remain explicitly excluded by `.stow-local-ignore`, while `.opencode/` must remain excluded as a whole.
 
 `.opencode/plans/` and `tmp/` are Git-ignored working directories intentionally made visible to OpenCode through `.ignore`.
 

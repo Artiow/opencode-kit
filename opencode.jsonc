@@ -6,7 +6,6 @@
     }
   },
   "mcp": {
-    "rider": { "enabled": true },
     "duckduckgo": { "enabled": true }
   }
 }
