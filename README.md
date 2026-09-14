@@ -5,20 +5,18 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 ## Preconditions
 
 - [GNU Stow](https://www.gnu.org/software/stow/) is required to deploy the global resources.
-- The [`nickclyde/duckduckgo-mcp-server`](https://github.com/nickclyde/duckduckgo-mcp-server) MCP server must be configured globally in OpenCode under the name `duckduckgo`; project agents depend on its tools. The shared project config only sets `enabled: true` and does not define how the server is installed or launched.
+- Configure [`nickclyde/duckduckgo-mcp-server`](https://github.com/nickclyde/duckduckgo-mcp-server) globally as `duckduckgo`; project agents depend on it. This repository only enables the server and does not configure its installation or launch.
 
 ## Configuration layers
 
-Machine-specific configuration remains in the unmanaged local file `~/.config/opencode/opencode.jsonc`. It contains settings such as `server`, `mcp`, and other local environment details and must not be added to this repository.
+Machine-specific settings such as `server` and `mcp` remain in the unmanaged `~/.config/opencode/opencode.jsonc` and must not be added to this repository.
 
 This repository also has two project-only configuration layers:
 
-- `opencode.jsonc` is the canonical shared project config. It is committed and must contain only portable settings that work for every clone.
-- `.opencode/opencode.jsonc` is the higher-priority local project override for machine- or user-specific settings. Both `.opencode/opencode.jsonc` and its JSON equivalent `.opencode/opencode.json` are Git-ignored; the override should not duplicate shared settings.
+- `opencode.jsonc` is the committed, portable shared config.
+- `.opencode/opencode.jsonc` is the higher-priority local override. It and `.opencode/opencode.json` are Git-ignored and should not duplicate shared settings.
 
-OpenCode merges the shared project config first and the local override on top of it. Neither project config is deployed to `~/.config/opencode/`: `.stow-local-ignore` excludes the root `opencode.jsonc` explicitly and excludes `.opencode/` as a whole.
-
-Model routing is stored in the repository-root `models.jsonc`. Stow installs it as `~/.config/opencode/models.jsonc`, and OpenCode loads it through `OPENCODE_CONFIG`:
+Model routing is stored in `models.jsonc`, deployed as `~/.config/opencode/models.jsonc`, and loaded through `OPENCODE_CONFIG`. OpenCode merges configuration in this order:
 
 ```text
 ~/.config/opencode/opencode.jsonc
@@ -30,7 +28,7 @@ opencode.jsonc (shared project config)
 .opencode/opencode.json(c) (local project override)
 ```
 
-The following variables must be present in the environment:
+The environment must provide:
 
 ```sh
 OPENCODE_CONFIG="${HOME}/.config/opencode/models.jsonc"
@@ -39,16 +37,9 @@ OPENCODE_MODEL_UTILITY="<provider>/<model>"
 OPENCODE_MODEL_LIGHT="<provider>/<model>"
 ```
 
-* `OPENCODE_CONFIG` points OpenCode to the version-controlled `models.jsonc`.
-* `OPENCODE_MODEL_FLAGSHIP` selects the primary, most capable model.
-* `OPENCODE_MODEL_UTILITY` selects a cheaper or faster model for auxiliary tasks and agents.
-* `OPENCODE_MODEL_LIGHT` selects the lightweight model used for `small_model` and other lightweight tasks.
+`models.jsonc` maps agents and model settings to these capability tiers through `{env:...}` interpolation. Actual model IDs and environment values remain local.
 
-`models.jsonc` maps agents and OpenCode model settings to these roles through `{env:...}` interpolation.
-
-Actual model IDs and environment configuration are intentionally local and are not stored in `opencode-kit`.
-
-Resources under `.opencode/` are repo-local and apply only while working in `opencode-kit`; tracked resources there remain in Git. Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` are global resources and continue to be deployed by Stow.
+Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` are deployed globally. Resources under `.opencode/` apply only to this repository, and the directory is excluded from Stow. The root `opencode.jsonc` is also excluded from Stow.
 
 ## Stow
 

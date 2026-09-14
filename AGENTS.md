@@ -1,79 +1,58 @@
 # OpenCode Kit
 
-This repository is the source of truth for version-controlled global OpenCode extensions deployed under `~/.config/opencode/` using GNU Stow.
+This repository is the source of truth for global OpenCode extensions deployed to `~/.config/opencode/` with GNU Stow.
 
-## Rules
+## Safety
 
 - Edit managed resources here, never through their symlinks under `~/.config/opencode/`.
 - Do not modify, move, delete, or import unmanaged files from `~/.config/opencode/` unless explicitly asked.
-- Never copy the global `~/.config/opencode/opencode.jsonc` (or `opencode.json`) into this repository or replace either project config with it.
-- Never commit credentials, tokens, API keys, or other secrets.
-- Do not commit or push unless explicitly asked.
+- Never copy the global `~/.config/opencode/opencode.json(c)` into this repository or use it to replace a project config.
+- Never commit secrets. Commit or push only when explicitly asked.
 
-## OpenCode resources
+## Resource Scopes
 
-Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` provide global OpenCode capabilities and are deployed through Stow. Resources under `.opencode/` are repo-local, apply only while working in `opencode-kit`, and remain tracked unless explicitly designated as local state.
+Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` are deployed globally through Stow. Resources under `.opencode/` apply only to this repository and remain tracked unless explicitly designated as local state.
 
-Before creating or modifying an OpenCode resource, load the built-in `customize-opencode` skill and use it as the primary reference for current formats and capabilities. Prefer the simplest suitable resource type, and keep reusable procedures in skills rather than duplicating them across agents.
+- Before changing OpenCode config, agents, skills, commands, plugins, tools, or permissions, load the built-in `customize-opencode` skill and follow its current schema guidance.
+- Prefer the simplest suitable resource type; put reusable procedures in skills instead of duplicating them across agents.
+- `.opencode/plans/` and `tmp/` are Git-ignored but deliberately exposed to OpenCode through `.ignore`.
+- OpenCode loads config-time resources only at startup. Tell the user to restart after changing them.
 
-## Configuration layers
+## Configuration
 
-`~/.config/opencode/opencode.jsonc` is a machine-specific unmanaged file for `server`, `mcp`, and other local settings. Do not import or modify it as part of repository maintenance.
-
-The repository-root `models.jsonc` is managed by Stow as `~/.config/opencode/models.jsonc` and loaded through `OPENCODE_CONFIG=${HOME}/.config/opencode/models.jsonc`. OpenCode merges the effective configuration in this order:
+Configuration precedence is low to high:
 
 ```text
 ~/.config/opencode/opencode.jsonc
-        +
-$OPENCODE_CONFIG -> ~/.config/opencode/models.jsonc
-        +
-opencode.jsonc (shared project config)
-        +
-.opencode/opencode.json(c) (local project override)
+-> $OPENCODE_CONFIG (~/.config/opencode/models.jsonc)
+-> opencode.jsonc
+-> .opencode/opencode.json(c)
 ```
 
-The root `opencode.jsonc` is the canonical shared project config: it is committed and contains only portable settings that must work for every clone. `.opencode/opencode.jsonc` is the higher-priority machine/user-specific override; it and `.opencode/opencode.json` are Git-ignored and must contain only local differences without duplicating the shared config.
-
-Model roles in `models.jsonc` must use `{env:...}` interpolation. The local environment must provide:
-
-- `OPENCODE_CONFIG` - path to the Stow-managed model profile.
-- `OPENCODE_MODEL_FLAGSHIP` - primary, most capable model.
-- `OPENCODE_MODEL_UTILITY` - cheaper or faster model for auxiliary tasks and agents.
-- `OPENCODE_MODEL_LIGHT` - lightweight model for lightweight tasks.
-
-Concrete model IDs and files containing environment values are intentionally local configuration. Never add them to Git or Stow.
-
-Neither `opencode.jsonc` nor `.opencode/opencode.jsonc` may be deployed to `~/.config/opencode/`. The root config must remain explicitly excluded by `.stow-local-ignore`, while `.opencode/` must remain excluded as a whole.
-
-`.opencode/plans/` and `tmp/` are Git-ignored working directories intentionally made visible to OpenCode through `.ignore`.
+- `models.jsonc` is deployed as `~/.config/opencode/models.jsonc`. Keep model IDs out of Git and reference `OPENCODE_MODEL_FLAGSHIP`, `OPENCODE_MODEL_UTILITY`, and `OPENCODE_MODEL_LIGHT` through `{env:...}`.
+- Concrete model IDs and files containing environment values are local; never add them to Git or Stow.
+- Root `opencode.jsonc` contains portable shared settings. `.opencode/opencode.json(c)` is a Git-ignored local override and must not duplicate shared settings.
+- Neither project config is deployed globally: `.stow-local-ignore` must exclude root `opencode.jsonc` and all of `.opencode/`.
 
 ## TypeScript
 
-Use npm and keep `package.json` and `package-lock.json` consistent when dependencies change.
-
-After changing TypeScript resources, run:
-
-```sh
-npm run typecheck
-```
-
-Check the current dependency-loading guidance in `customize-opencode` before adding runtime dependencies to global resources.
+- Use npm and update `package.json` and `package-lock.json` together.
+- Run `npm run typecheck` after changing TypeScript under `tools/`, `plugins/`, or `.opencode/`.
+- Before adding runtime dependencies to global resources, check the dependency-loading guidance in `customize-opencode`.
 
 ## Stow
 
-Use `--no-folding` so managed symlinks can coexist with unmanaged local files.
-
-Run a dry-run whenever a change affects deployed paths or exclusions, including adding, deleting, renaming, or moving a managed resource or top-level path, or changing `.stow-local-ignore`:
+- Always use `--no-folding`; managed links must coexist with unmanaged files.
+- Add repository-only top-level paths to `.stow-local-ignore`.
+- After changing deployed paths, deployment topology, or `.stow-local-ignore`, run:
 
 ```sh
 stow -n -v -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
 ```
 
-The dry-run must complete without conflicts or unexpected link operations. Stop and investigate otherwise. Do not use `stow --adopt` automatically or overwrite an unmanaged file to resolve a conflict.
-
-Repository-only top-level paths must be excluded in `.stow-local-ignore` in the same change. Content-only changes to an existing managed file, and changes wholly inside an already excluded path, do not require a dry-run unless they affect deployment topology or exclusions.
-
-Deploy only when explicitly required:
+- Content-only changes to existing managed files or excluded paths do not require a dry-run.
+- Investigate every conflict or unexpected link operation; never use `stow --adopt` automatically or overwrite unmanaged files.
+- Deploy only when explicitly asked, with:
 
 ```sh
 stow -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
@@ -81,11 +60,5 @@ stow -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
 
 ## Validation
 
-Before considering a change complete:
-
-1. Inspect related resources and conventions and make the smallest coherent change.
-2. Run `npm run typecheck` when TypeScript is affected.
-3. Run the Stow dry-run when deployment topology or exclusions are affected.
-4. Run `git diff --check` and review `git diff`.
-5. Do not commit a known-invalid or conflicting state unless explicitly asked to bypass validation.
-6. Mention when a new OpenCode session or restart is required.
+- Run `git diff --check` and review `git diff` before finishing.
+- Do not commit a known-invalid or conflicting state unless explicitly asked to bypass validation.
