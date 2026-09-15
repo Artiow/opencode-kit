@@ -67,7 +67,6 @@ import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
  * plugin, объём каталога Superpowers мал, а код получается значительно проще.
  */
 import {
-  existsSync,
   readFileSync,
   readdirSync,
 } from "node:fs"
@@ -106,6 +105,9 @@ const SUPERPOWERS_AGENT = "superpowers"
  * `skill` tool.
  */
 const POLICY_SKILL = "using-superpowers"
+
+const EXPECTED_OPENCODE_VERSION = ">=1.18.30 <1.19.0"
+const EXPECTED_SUPERPOWERS_VERSION = "6.3.0"
 
 /**
  * String literal union в TypeScript — ближайший аналог enum с ровно тремя
@@ -220,6 +222,48 @@ function skillsDir(): string {
   return join(dirname(packageJson), "skills")
 }
 
+function packageVersion(specifier: string): string {
+  try {
+    const packageJson = fileURLToPath(import.meta.resolve(specifier))
+    const manifest = JSON.parse(readFileSync(packageJson, "utf8")) as {
+      version?: unknown
+    }
+
+    return typeof manifest.version === "string"
+      ? manifest.version
+      : "<malformed>"
+  } catch {
+    return "<unresolved>"
+  }
+}
+
+function parseVersion(version: string): [number, number, number] | undefined {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)
+  return match
+    ? [Number(match[1]), Number(match[2]), Number(match[3])]
+    : undefined
+}
+
+function validateVersions(opencode: string, superpowers: string): void {
+  const parsedOpenCode = parseVersion(opencode)
+  const openCodeSupported = parsedOpenCode
+    && parsedOpenCode[0] === 1
+    && parsedOpenCode[1] === 18
+    && parsedOpenCode[2] >= 30
+
+  if (!openCodeSupported) {
+    throw new Error(
+      `[superpowers-agent] expected @opencode-ai/plugin ${EXPECTED_OPENCODE_VERSION}, actual ${opencode}`,
+    )
+  }
+
+  if (superpowers !== EXPECTED_SUPERPOWERS_VERSION) {
+    throw new Error(
+      `[superpowers-agent] expected superpowers ${EXPECTED_SUPERPOWERS_VERSION}, actual ${superpowers}`,
+    )
+  }
+}
+
 
 /**
  * Читает `name` из YAML frontmatter файла SKILL.md.
@@ -247,9 +291,8 @@ function skillName(file: string): string {
     /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/,
   )?.[1]
 
-  const name = frontmatter
-    ?.match(/^name:\s*(.+?)\s*$/m)?.[1]
-    ?.replace(/^[\"']|[\"']$/g, "")
+  const rawName = frontmatter?.match(/^name:[ \t]*([^\r\n]*)$/m)?.[1]
+  const name = rawName?.trim().replace(/^[\"']|[\"']$/g, "").trim()
 
   if (!name) {
     throw new Error(
@@ -282,6 +325,20 @@ function discoverSkills(dir: string): string[] {
   }
 
   return skills
+}
+
+type Dependencies = {
+  opencodeVersion: () => string
+  superpowersVersion: () => string
+  skillsDir: () => string
+  upstreamPlugin: typeof UpstreamSuperpowersPlugin
+}
+
+const dependencies: Dependencies = {
+  opencodeVersion: () => packageVersion("@opencode-ai/plugin/package.json"),
+  superpowersVersion: () => packageVersion("superpowers/package.json"),
+  skillsDir,
+  upstreamPlugin: UpstreamSuperpowersPlugin,
 }
 
 
@@ -470,11 +527,15 @@ function currentAgent(messages: Messages): string | undefined {
  * Результат функции — object hook-ов, которые OpenCode затем вызывает на
  * соответствующих стадиях lifecycle.
  */
-export const SuperpowersAgentPlugin: Plugin = async (
-  input,
-  rawOptions,
-) => {
+export function createSuperpowersAgentPlugin(
+  overrides: Partial<Dependencies> = {},
+): Plugin {
+  const deps = { ...dependencies, ...overrides }
+
+  return async (input, rawOptions) => {
   const options = parseOptions(rawOptions)
+
+  validateVersions(deps.opencodeVersion(), deps.superpowersVersion())
 
   /**
    * Инициализируем upstream plugin как библиотеку.
@@ -483,21 +544,37 @@ export const SuperpowersAgentPlugin: Plugin = async (
    * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
    * этот wrapper явно его не вызовет.
    */
-  const upstream = await UpstreamSuperpowersPlugin(input)
+  if (typeof deps.upstreamPlugin !== "function") {
+    throw new Error("[superpowers-agent] upstream plugin is not callable")
+  }
 
-  const dir = skillsDir()
+  const upstream = await deps.upstreamPlugin(input)
 
-  if (!existsSync(dir)) {
+  if (typeof upstream?.config !== "function") {
+    throw new Error("[superpowers-agent] required upstream config hook is not callable")
+  }
+
+  if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
     throw new Error(
-      `[superpowers-agent] Superpowers skills directory not found: ${dir}`,
+      "[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable",
     )
   }
+
+  const dir = deps.skillsDir()
 
   /**
    * Наш собственный discovery нужен только для permissions. Само содержимое
    * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
    */
-  const skills = discoverSkills(dir)
+  let skills: string[]
+  try {
+    skills = discoverSkills(dir)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`,
+    )
+  }
   const uniqueSkills = [...new Set(skills)]
 
   if (!uniqueSkills.length) {
@@ -564,7 +641,7 @@ export const SuperpowersAgentPlugin: Plugin = async (
        * путь иногда приходится дополнительно прописывать статически; это
        * workaround из README, а не логика этого wrapper-а.
        */
-      await upstream.config?.(config)
+      await upstream.config(config)
 
       /** После upstream config накладываем наш access-control. */
       denyGlobally(config, denied)
@@ -597,21 +674,20 @@ export const SuperpowersAgentPlugin: Plugin = async (
         }
 
         /**
-         * Optional chaining на method call (`?.(...)`) нужен потому, что hook в
-         * типе plugin interface optional. Если будущая upstream версия его не
-         * вернёт, выражение безопасно ничего не вызовет.
-         *
-         * Пока hook существует, upstream полностью контролирует:
+         * Upstream полностью контролирует:
          * - чтение `using-superpowers`;
          * - оригинальный prompt/wrapper;
          * - OpenCode tool mapping;
          * - duplicate protection/caching;
          * - фактическую mutation messages.
          */
-        await upstream["experimental.chat.messages.transform"]?.(
+        await upstream["experimental.chat.messages.transform"](
           hookInput,
           output,
         )
       },
   }
+  }
 }
+
+export const SuperpowersAgentPlugin: Plugin = createSuperpowersAgentPlugin()
