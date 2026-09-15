@@ -62,6 +62,47 @@ test("initializes one scoped factory with environment options", async () => {
   assert.equal(config.skills.paths.length, 1)
 })
 
+test("routes bootstrap through lifecycle events in an isolated plugin", async () => {
+  const { stdout } = await runIsolatedPlugin(`
+    const exported = (await import(PLUGIN_URL)).default
+    let transforms = 0
+    const plugin = exported.createForTesting({
+      opencodeVersion: () => "1.18.30",
+      superpowersVersion: () => "6.3.0",
+      skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
+      upstreamPlugin: async () => ({
+        config: async () => {},
+        "experimental.chat.messages.transform": async () => { transforms++ },
+      }),
+    })
+    const hooks = await plugin({}, { agents: ["build"] })
+    await hooks.config({ agent: { build: {} } })
+    await hooks.event({ event: {
+      type: "session.created",
+      properties: { info: { id: "session" } },
+    } })
+    await hooks.event({ event: {
+      type: "message.updated",
+      properties: { info: {
+        id: "assistant",
+        sessionID: "session",
+        role: "assistant",
+        parentID: "user",
+        agent: "build",
+      } },
+    } })
+    const output = { messages: [
+      { info: { id: "user", sessionID: "session", role: "user", agent: "plan" }, parts: [] },
+      { info: { id: "assistant", sessionID: "session", role: "assistant", parentID: "user", agent: "build" }, parts: [] },
+    ] }
+    await hooks["experimental.chat.messages.transform"]({ sessionID: "session" }, output)
+    await hooks["experimental.chat.messages.transform"]({ sessionID: "session" }, structuredClone(output))
+    console.log(JSON.stringify({ transforms }))
+  `, { provisionDependencies: true })
+
+  assert.deepEqual(JSON.parse(stdout), { transforms: 1 })
+})
+
 test("reports a failing config hook without exposing staged mutations", async () => {
   await assert.rejects(runIsolatedPlugin(`
     const exported = (await import(PLUGIN_URL)).default

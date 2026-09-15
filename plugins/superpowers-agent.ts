@@ -669,19 +669,15 @@ function configureSuperpowersAgent(
 }
 
 
-/**
- * Определяет agent, выбранный для текущего model call.
- *
- * OpenCode hook `experimental.chat.messages.transform` сейчас не передаёт имя
- * agent отдельным аргументом. Зато user-message metadata содержит `agent`.
- * Последний user message соответствует текущему шагу, поэтому идём с конца.
- */
-function currentAgent(messages: Messages): string | undefined {
+function latestUser(messages: Messages): {
+  id: string
+  sessionID: string
+} | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const info = messages[index].info
 
     if (info.role === "user") {
-      return info.agent
+      return { id: info.id, sessionID: info.sessionID }
     }
   }
 
@@ -693,17 +689,24 @@ type TransformInput = {
   sessionID?: string
 }
 
-async function isDirectSession(
-  client: PluginInput["client"],
-  sessionID: string | undefined,
-): Promise<boolean> {
-  if (!sessionID) return false
+type AssistantRoute = {
+  parentID: string
+  agent: string
+  messageID: string
+  transformed: boolean
+}
 
+async function sessionParentID(
+  client: PluginInput["client"],
+  sessionID: string,
+): Promise<{ found: true; parentID: string | undefined } | { found: false }> {
   try {
     const result = await client.session.get({ path: { id: sessionID } })
-    return !result.error && !!result.data && result.data.parentID === undefined
+    return !result.error && result.data
+      ? { found: true, parentID: result.data.parentID }
+      : { found: false }
   } catch {
-    return false
+    return { found: false }
   }
 }
 
@@ -834,6 +837,9 @@ function createSuperpowersAgentPlugin(
    * Это исключает состояние "skills разрешены, но bootstrap не включён".
    */
   const enabledAgents = new Set<string>()
+  const assistantRoutes = new Map<string, AssistantRoute>()
+  const parentIDs = new Map<string, string | undefined>()
+  const compacting = new Set<string>()
 
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
     const runtimeConfig = config as RuntimeConfig
@@ -883,6 +889,39 @@ function createSuperpowersAgentPlugin(
      */
     config: configHook,
 
+    event: async ({ event }) => {
+      if (event.type === "session.created" || event.type === "session.updated") {
+        parentIDs.set(event.properties.info.id, event.properties.info.parentID)
+        return
+      }
+
+      if (event.type === "session.deleted") {
+        const sessionID = event.properties.info.id
+        parentIDs.delete(sessionID)
+        assistantRoutes.delete(sessionID)
+        compacting.delete(sessionID)
+        return
+      }
+
+      if (event.type !== "message.updated") return
+      const info = event.properties.info as typeof event.properties.info & {
+        agent?: string
+      }
+      if (info.role !== "assistant") return
+      if (!info.agent) return
+
+      assistantRoutes.set(info.sessionID, {
+        parentID: info.parentID,
+        agent: info.agent,
+        messageID: info.id,
+        transformed: false,
+      })
+    },
+
+    "experimental.session.compacting": async ({ sessionID }) => {
+      compacting.add(sessionID)
+    },
+
     /**
      * Experimental OpenCode hook вызывается непосредственно перед model call и
      * позволяет изменить набор сообщений, отправляемых модели.
@@ -892,19 +931,42 @@ function createSuperpowersAgentPlugin(
      */
     "experimental.chat.messages.transform":
       async (hookInput, output) => {
-        const agent = currentAgent(output.messages)
+        const sessionID = (hookInput as TransformInput).sessionID
+        if (!sessionID) return
 
+        if (compacting.delete(sessionID)) return
+
+        const user = latestUser(output.messages)
+        const route = assistantRoutes.get(sessionID)
+        if (!user || user.sessionID !== sessionID || !route) return
+
+        const routedMessage = output.messages.find(
+          ({ info }) => info.role === "assistant" && info.id === route.messageID,
+        )?.info as ({
+          sessionID: string
+          parentID: string
+          agent?: string
+        } | undefined)
         if (
-          !agent
-          || INTERNAL_AGENTS.has(agent)
-          || !enabledAgents.has(agent)
-          || !await isDirectSession(
-            input.client,
-            (hookInput as TransformInput).sessionID,
-          )
-        ) {
-          return
+          route.parentID !== user.id
+          || route.transformed
+          || INTERNAL_AGENTS.has(route.agent)
+          || !enabledAgents.has(route.agent)
+          || (routedMessage && (
+            routedMessage.sessionID !== sessionID
+            || routedMessage.parentID !== route.parentID
+            || routedMessage.agent !== route.agent
+          ))
+        ) return
+
+        if (!parentIDs.has(sessionID)) {
+          const session = await sessionParentID(input.client, sessionID)
+          if (!session.found) return
+          parentIDs.set(sessionID, session.parentID)
         }
+        if (parentIDs.get(sessionID) !== undefined) return
+
+        route.transformed = true
 
         /**
          * Upstream полностью контролирует:

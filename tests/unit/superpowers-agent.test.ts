@@ -31,6 +31,7 @@ async function load(
     upstream?: Upstream | unknown
     agents?: string[]
     session?: { data?: { parentID?: string } | null; error?: unknown } | Error
+      | ((parameters: unknown) => unknown)
   } = {},
 ): Promise<Hooks> {
   const fixture = overrides.dir ? undefined : skillsFixture()
@@ -48,8 +49,9 @@ async function load(
     return await plugin({
       client: {
         session: {
-          get: async () => {
+          get: async (parameters: unknown) => {
             if (overrides.session instanceof Error) throw overrides.session
+            if (typeof overrides.session === "function") return overrides.session(parameters)
             return overrides.session ?? { data: {} }
           },
         },
@@ -58,6 +60,54 @@ async function load(
   } finally {
     fixture?.cleanup()
   }
+}
+
+function messages(sessionID: string, agent: string, userID = "user", assistantID = "assistant") {
+  return [
+    { info: { id: userID, sessionID, role: "user", agent }, parts: [] },
+    {
+      info: {
+        id: assistantID,
+        sessionID,
+        role: "assistant",
+        parentID: userID,
+        agent,
+      },
+      parts: [],
+    },
+  ] as never
+}
+
+async function assistantUpdated(
+  hooks: Hooks,
+  sessionID: string,
+  agent: string,
+  parentID = "user",
+  messageID = "assistant",
+) {
+  await hooks.event!({
+    event: {
+      type: "message.updated",
+      properties: {
+        sessionID,
+        info: {
+          id: messageID,
+          sessionID,
+          role: "assistant",
+          parentID,
+          agent,
+        },
+      },
+    } as never,
+  })
+}
+
+async function transform(hooks: Hooks, sessionID: string, agent: string) {
+  await assistantUpdated(hooks, sessionID, agent)
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID } as never,
+    { messages: messages(sessionID, agent) },
+  )
 }
 
 for (const version of ["1.18.30", "1.18.999"]) {
@@ -164,8 +214,9 @@ test("delegates both required upstream hooks", async () => {
 
   await hooks.config!(config)
   const transform = hooks["experimental.chat.messages.transform"]!
+  await assistantUpdated(hooks, "direct", "superpowers")
   await transform({ sessionID: "direct" } as never, {
-    messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }],
+    messages: messages("direct", "superpowers"),
   } as never)
 
   assert.equal(configCalls, 1)
@@ -192,9 +243,7 @@ test("discards upstream mutations when upstream throws", async () => {
   const snapshot = structuredClone(config)
 
   await assert.rejects(hooks.config!(config as never), /upstream failed/)
-  await hooks["experimental.chat.messages.transform"]!({ sessionID: "direct" } as never, {
-    messages: [{ info: { role: "user", agent: "build" }, parts: [] }],
-  } as never)
+  await transform(hooks, "direct", "build")
 
   assert.deepEqual(config, snapshot)
   assert.strictEqual(config.agent.build, build)
@@ -365,9 +414,7 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   const config: Record<string, any> = { agent: { superpowers } }
 
   await hooks.config!(config as never)
-  await hooks["experimental.chat.messages.transform"]!({ sessionID: "direct" } as never, {
-    messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }],
-  } as never)
+  await transform(hooks, "direct", "superpowers")
 
   assert.strictEqual(config.agent.superpowers, superpowers)
   assert.deepEqual(superpowers, {
@@ -441,10 +488,7 @@ for (const [name, mode] of [["primary", "primary"], ["subagent", "subagent"]] as
       },
     })
     await hooks.config!({ agent: { reviewer: { mode } } } as never)
-    await hooks["experimental.chat.messages.transform"]!(
-      { sessionID: "direct" } as never,
-      { messages: [{ info: { role: "user", agent: "reviewer" }, parts: [] }] } as never,
-    )
+    await transform(hooks, "direct", "reviewer")
     assert.equal(calls, 1)
   })
 }
@@ -461,10 +505,7 @@ test("does not bootstrap a dispatched session using the same enabled agent", asy
   })
   const config: Record<string, any> = { agent: { build: {} } }
   await hooks.config!(config as never)
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "child" } as never,
-    { messages: [{ info: { role: "user", agent: "build" }, parts: [] }] } as never,
-  )
+  await transform(hooks, "child", "build")
   assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
   assert.equal(calls, 0)
 })
@@ -483,10 +524,7 @@ for (const [name, session, expected] of [
       },
     })
     await hooks.config!({} as never)
-    await hooks["experimental.chat.messages.transform"]!(
-      { sessionID: name } as never,
-      { messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }] } as never,
-    )
+    await transform(hooks, name, "superpowers")
     assert.equal(calls, expected)
   })
 }
@@ -502,11 +540,171 @@ test("never bootstraps internal agents despite allowlisting", async () => {
   })
   await hooks.config!({} as never)
   for (const agent of ["compaction", "title", "summary"]) {
-    await hooks["experimental.chat.messages.transform"]!(
-      { sessionID: "direct" } as never,
-      { messages: [{ info: { role: "user", agent }, parts: [] }] } as never,
-    )
+    await transform(hooks, "direct", agent)
   }
+  assert.equal(calls, 0)
+})
+
+test("routes from assistant events across cloned, reordered, and reused histories exactly once", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  await assistantUpdated(hooks, "session", "build")
+  const history = messages("session", "build") as any[]
+  const transformHook = hooks["experimental.chat.messages.transform"]!
+
+  await transformHook({ sessionID: "session" } as never, { messages: history } as never)
+  history.reverse()
+  await transformHook({ sessionID: "session" } as never, { messages: history } as never)
+  await transformHook(
+    { sessionID: "session" } as never,
+    { messages: structuredClone(history) } as never,
+  )
+
+  assert.equal(calls, 1)
+})
+
+test("replaces assistant routing for tool loops and agent switches both ways", async () => {
+  const routed: string[] = []
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async (_input: unknown, output: any) => {
+        routed.push(output.messages.find((message: any) => message.info.role === "assistant").info.id)
+      },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+
+  await assistantUpdated(hooks, "session", "build", "user", "assistant-1")
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "session" } as never,
+    { messages: messages("session", "build", "user", "assistant-1") },
+  )
+  await assistantUpdated(hooks, "session", "plan", "user", "assistant-2")
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "session" } as never,
+    { messages: messages("session", "plan", "user", "assistant-2") },
+  )
+  await assistantUpdated(hooks, "session", "build", "user", "assistant-3")
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "session" } as never,
+    { messages: messages("session", "build", "user", "assistant-3") },
+  )
+
+  assert.deepEqual(routed, ["assistant-1", "assistant-3"])
+})
+
+test("isolates concurrent direct and child sessions and clears deleted state", async () => {
+  let calls = 0
+  const lookups: unknown[] = []
+  const hooks = await load({
+    agents: ["build"],
+    session: (parameters) => {
+      lookups.push(parameters)
+      return { data: {} }
+    },
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  await hooks.event!({ event: {
+    type: "session.created",
+    properties: { info: { id: "direct", parentID: undefined } },
+  } as never })
+  await hooks.event!({ event: {
+    type: "session.created",
+    properties: { info: { id: "child", parentID: "direct" } },
+  } as never })
+
+  await transform(hooks, "child", "build")
+  await transform(hooks, "direct", "build")
+  await hooks.event!({ event: {
+    type: "session.deleted",
+    properties: { info: { id: "direct" } },
+  } as never })
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "direct" } as never,
+    { messages: messages("direct", "build") },
+  )
+
+  assert.equal(calls, 1)
+  assert.deepEqual(lookups, [])
+})
+
+test("uses the installed session lookup signature on a cache miss", async () => {
+  const lookups: unknown[] = []
+  const hooks = await load({
+    agents: ["build"],
+    session: (parameters) => {
+      lookups.push(parameters)
+      return { data: {} }
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  await transform(hooks, "session", "build")
+  assert.deepEqual(lookups, [{ path: { id: "session" } }])
+})
+
+test("skips one compaction transform then allows the autocontinue assistant", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  await assistantUpdated(hooks, "session", "build", "old-user", "compaction")
+  await hooks["experimental.session.compacting"]!({ sessionID: "session" }, {
+    context: [],
+  })
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "session" } as never,
+    { messages: messages("session", "build", "old-user", "compaction") },
+  )
+  await assistantUpdated(hooks, "session", "build", "continue", "autocontinue")
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "session" } as never,
+    { messages: messages("session", "build", "continue", "autocontinue") },
+  )
+
+  assert.equal(calls, 1)
+})
+
+test("fails closed for stale parents, mixed sessions, and mismatched assistant history", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  const transformHook = hooks["experimental.chat.messages.transform"]!
+
+  await assistantUpdated(hooks, "session", "build", "stale")
+  await transformHook({ sessionID: "session" } as never, {
+    messages: messages("session", "build"),
+  })
+  await assistantUpdated(hooks, "session", "build")
+  const mixed = messages("session", "build") as any[]
+  mixed[0].info.sessionID = "other"
+  await transformHook({ sessionID: "session" } as never, { messages: mixed } as never)
+  const mismatch = messages("session", "plan")
+  await transformHook({ sessionID: "session" } as never, { messages: mismatch })
+
   assert.equal(calls, 0)
 })
 
@@ -527,9 +725,10 @@ for (const [name, session, sessionID] of [
       },
     })
     await hooks.config!({ agent: { build: {} } } as never)
-    await hooks["experimental.chat.messages.transform"]!(
-      { sessionID } as never,
-      { messages: [{ info: { role: "user", agent: "build" }, parts: [] }] } as never,
+    if (sessionID) await transform(hooks, sessionID, "build")
+    else await hooks["experimental.chat.messages.transform"]!(
+      {} as never,
+      { messages: messages("unknown", "build") },
     )
     assert.equal(calls, 0)
   })
