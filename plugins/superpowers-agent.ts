@@ -570,6 +570,75 @@ function validateAgents(config: RuntimeConfig, names: string[]): void {
 }
 
 
+function configEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => configEqual(value, right[index]))
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const leftEntries = Object.entries(left)
+    const rightEntries = Object.entries(right)
+    return leftEntries.length === rightEntries.length
+      && leftEntries.every(([key, value], index) =>
+        key === rightEntries[index]?.[0]
+        && configEqual(value, rightEntries[index]?.[1]))
+  }
+  return false
+}
+
+function reconciledValue(original: unknown, draft: unknown): unknown {
+  if (configEqual(original, draft)) return original
+
+  if (Array.isArray(draft)) {
+    const source = Array.isArray(original) ? original : []
+    return draft.map((value, index) => reconciledValue(source[index], value))
+  }
+
+  if (draft && typeof draft === "object") {
+    const source = original && typeof original === "object" && !Array.isArray(original)
+      ? original as Record<string, unknown>
+      : {}
+    return Object.fromEntries(
+      Object.entries(draft).map(([key, value]) => [
+        key,
+        reconciledValue(source[key], value),
+      ]),
+    )
+  }
+
+  return draft
+}
+
+function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
+  const current = original as Record<string, unknown>
+  const staged = draft as Record<string, unknown>
+  const removed = Object.keys(current).filter((key) => !(key in staged))
+  const changed = Object.keys(staged)
+    .filter((key) => !configEqual(current[key], staged[key]))
+    .map((key) => [key, reconciledValue(current[key], staged[key])] as const)
+
+  for (const key of removed) {
+    if (Object.getOwnPropertyDescriptor(current, key)?.configurable === false) {
+      throw new Error(`[superpowers-agent] cannot delete config.${key}`)
+    }
+  }
+  for (const [key] of changed) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, key)
+    if (descriptor && (!("value" in descriptor) || !descriptor.writable)) {
+      throw new Error(`[superpowers-agent] cannot replace config.${key}`)
+    }
+    if (!descriptor && !Object.isExtensible(current)) {
+      throw new Error(`[superpowers-agent] cannot add config.${key}`)
+    }
+  }
+
+  for (const key of removed) delete current[key]
+  for (const [key, value] of changed) current[key] = value
+}
+
+
 /**
  * Создаёт или дополняет selectable agent `superpowers`.
  *
@@ -743,13 +812,14 @@ function createSuperpowersAgentPlugin(
    * Одно и то же множество используется для access-control и bootstrap scope.
    * Это исключает состояние "skills разрешены, но bootstrap не включён".
    */
-  const enabledAgents = new Set(options.agents)
+  const enabledAgents = new Set<string>()
 
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
     const runtimeConfig = config as RuntimeConfig
+    const draft = structuredClone(runtimeConfig)
 
     /** Built-ins are registered after config hooks, so validate against both sources. */
-    validateAgents(runtimeConfig, options.agents)
+    validateAgents(draft, options.agents)
 
     /**
      * Делегируем upstream его собственную регистрацию skills path.
@@ -759,27 +829,30 @@ function createSuperpowersAgentPlugin(
      * путь иногда приходится дополнительно прописывать статически; это
      * workaround из README, а не логика этого wrapper-а.
      */
-    await upstream.config(config)
+    await upstream.config(draft as Config)
 
     /** После upstream config накладываем наш access-control. */
-    denyGlobally(runtimeConfig, denied)
+    denyGlobally(draft, denied)
 
     /**
      * Перебираем только explicit allowlist пользователя. Все остальные agents
      * автоматически остаются под global deny.
      */
     for (const agent of options.agents) {
-      runtimeConfig.agent ??= {}
-      runtimeConfig.agent[agent] ??= {}
-      enableAgent(runtimeConfig, agent, enabled)
+      draft.agent ??= {}
+      draft.agent[agent] ??= {}
+      enableAgent(draft, agent, enabled)
     }
 
     /** Итоговая config.agent запись определяет bootstrap scope этого agent. */
-    if (configureSuperpowersAgent(runtimeConfig, enabled)) {
-      enabledAgents.add(SUPERPOWERS_AGENT)
-    } else {
-      enabledAgents.delete(SUPERPOWERS_AGENT)
+    const nextEnabledAgents = new Set(options.agents)
+    if (configureSuperpowersAgent(draft, enabled)) {
+      nextEnabledAgents.add(SUPERPOWERS_AGENT)
     }
+
+    commitConfig(runtimeConfig, draft)
+    enabledAgents.clear()
+    for (const agent of nextEnabledAgents) enabledAgents.add(agent)
   }
 
   return {

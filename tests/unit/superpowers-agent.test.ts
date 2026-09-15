@@ -159,8 +159,118 @@ test("delegates both required upstream hooks", async () => {
   } as never)
 
   assert.equal(configCalls, 1)
-  assert.strictEqual(upstreamConfig, config)
+  assert.notStrictEqual(upstreamConfig, config)
   assert.equal(transformCalls, 1)
+})
+
+test("discards upstream mutations when upstream throws", async () => {
+  let transformCalls = 0
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async (config: Record<string, any>) => {
+        config.skills = { paths: ["staged"] }
+        config.agent.build.changed = true
+        throw new Error("upstream failed")
+      },
+      "experimental.chat.messages.transform": async () => { transformCalls++ },
+    },
+  })
+  const nested = { retained: true }
+  const build = { nested }
+  const config: Record<string, any> = { agent: { build }, untouched: nested }
+  const snapshot = structuredClone(config)
+
+  await assert.rejects(hooks.config!(config as never), /upstream failed/)
+  await hooks["experimental.chat.messages.transform"]!({} as never, {
+    messages: [{ info: { role: "user", agent: "build" }, parts: [] }],
+  } as never)
+
+  assert.deepEqual(config, snapshot)
+  assert.strictEqual(config.agent.build, build)
+  assert.strictEqual(config.untouched, nested)
+  assert.equal(transformCalls, 0)
+})
+
+test("discards upstream mutations on a downstream wrapper failure", async () => {
+  const hooks = await load({
+    upstream: {
+      config: async (config: Record<string, any>) => {
+        config.addedByUpstream = { staged: true }
+        delete config.removedByUpstream
+      },
+      "experimental.chat.messages.transform": async () => {},
+    },
+  })
+  const permission = { skill: true }
+  const config: Record<string, any> = {
+    permission,
+    removedByUpstream: { retained: true },
+  }
+  const snapshot = structuredClone(config)
+
+  await assert.rejects(hooks.config!(config as never), /permission\.skill must/)
+
+  assert.deepEqual(config, snapshot)
+  assert.strictEqual(config.permission, permission)
+})
+
+test("atomically reconciles complete upstream and wrapper changes", async () => {
+  let receivedDraft: unknown
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async (config: Record<string, any>) => {
+        receivedDraft = config
+        config.added = { values: [1, { stable: true }] }
+        config.array = [{ stable: true }, { changed: true }]
+        delete config.removed
+      },
+      "experimental.chat.messages.transform": async () => {},
+    },
+  })
+  const stable = { stable: true }
+  const changed = { changed: false }
+  const unchangedTop = { retained: true }
+  const config: Record<string, any> = {
+    agent: { build: {} },
+    array: [stable, changed],
+    removed: true,
+    unchangedTop,
+  }
+  const root = config
+  const originalArray = config.array
+
+  await hooks.config!(config as never)
+
+  assert.strictEqual(config, root)
+  assert.notStrictEqual(receivedDraft, root)
+  assert.equal("removed" in config, false)
+  assert.deepEqual(config.added, { values: [1, { stable: true }] })
+  assert.strictEqual(config.unchangedTop, unchangedTop)
+  assert.notStrictEqual(config.array, originalArray)
+  assert.strictEqual(config.array[0], stable)
+  assert.notStrictEqual(config.array[1], changed)
+  assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
+  assert.equal(config.agent.superpowers.mode, "primary")
+})
+
+test("detects an uncommittable root before applying staged changes", async () => {
+  const hooks = await load()
+  const agent = {}
+  const config: Record<string, any> = {}
+  Object.defineProperty(config, "agent", {
+    configurable: true,
+    enumerable: true,
+    value: agent,
+    writable: false,
+  })
+
+  await assert.rejects(hooks.config!(config as never), /cannot replace config\.agent/)
+
+  assert.deepEqual(config, { agent: {} })
+  assert.strictEqual(config.agent, agent)
+  assert.equal("permission" in config, false)
 })
 
 test("creates the default superpowers agent when absent", async () => {
@@ -202,15 +312,16 @@ test("augments a customized superpowers agent without a collision", async () => 
 
   await hooks.config!(config as never)
 
-  assert.strictEqual(config.agent.superpowers, superpowers)
-  assert.equal(superpowers.mode, "primary")
-  assert.equal(superpowers.model, "provider/custom")
-  assert.equal(superpowers.description, "Custom description")
-  assert.equal(superpowers.prompt, "Custom prompt")
-  assert.equal(superpowers.temperature, 0.2)
-  assert.deepEqual(superpowers.customAgentField, { retained: true })
-  assert.deepEqual(superpowers.permission.bash, { "git status": "allow" })
-  assert.deepEqual(Object.entries(superpowers.permission.skill), [
+  const configured = config.agent.superpowers
+  assert.notStrictEqual(configured, superpowers)
+  assert.equal(configured.mode, "primary")
+  assert.equal(configured.model, "provider/custom")
+  assert.equal(configured.description, "Custom description")
+  assert.equal(configured.prompt, "Custom prompt")
+  assert.equal(configured.temperature, 0.2)
+  assert.strictEqual(configured.customAgentField, superpowers.customAgentField)
+  assert.strictEqual(configured.permission.bash, superpowers.permission.bash)
+  assert.deepEqual(Object.entries(configured.permission.skill), [
     ["private-*", "ask"],
     ["brainstorming", "allow"],
     ["using-superpowers", "deny"],
@@ -285,8 +396,8 @@ test("enables a configured custom agent regardless of mode or visibility", async
 
   await hooks.config!(config as never)
 
-  assert.strictEqual(config.agent["internal-reviewer"], custom)
-  assert.equal((custom as any).permission.skill.brainstorming, "allow")
+  assert.notStrictEqual(config.agent["internal-reviewer"], custom)
+  assert.equal(config.agent["internal-reviewer"].permission.skill.brainstorming, "allow")
 })
 
 for (const [name, config] of [
@@ -500,22 +611,23 @@ for (const permissionShape of permissionShapes) {
 
       await assert.doesNotReject(hooks.config!(config as never))
 
-      assert.equal(build.permission.skill.brainstorming, "allow")
-      assert.equal(build.permission.skill["using-superpowers"], "deny")
-      assert.equal(build.model, "provider/model")
-      assert.equal(build.temperature, 0.25)
-      assert.deepEqual(build.customAgentField, { retained: true })
+      const configured = config.agent.build
+      assert.equal(configured.permission.skill.brainstorming, "allow")
+      assert.equal(configured.permission.skill["using-superpowers"], "deny")
+      assert.equal(configured.model, "provider/model")
+      assert.equal(configured.temperature, 0.25)
+      assert.strictEqual(configured.customAgentField, build.customAgentField)
       if (permissionShape === "scalar") {
-        assert.equal(build.permission["*"], "ask")
+        assert.equal(configured.permission["*"], "ask")
       } else if (permissionShape === "object") {
-        assert.deepEqual(build.permission.bash, { "git status": "allow" })
-        assert.equal(build.permission.edit, "ask")
-        assert.deepEqual(build.permission.custom, { retained: true })
-        if (skillShape === "scalar") assert.equal(build.permission.skill["*"], "ask")
+        assert.deepEqual(configured.permission.bash, { "git status": "allow" })
+        assert.equal(configured.permission.edit, "ask")
+        assert.deepEqual(configured.permission.custom, { retained: true })
+        if (skillShape === "scalar") assert.equal(configured.permission.skill["*"], "ask")
         if (skillShape === "object") {
-          assert.equal(build.permission.skill["*"], "ask")
-          assert.equal(build.permission.skill["private-*"], "deny")
-          assert.deepEqual(Object.keys(build.permission.skill), [
+          assert.equal(configured.permission.skill["*"], "ask")
+          assert.equal(configured.permission.skill["private-*"], "deny")
+          assert.deepEqual(Object.keys(configured.permission.skill), [
             "*", "private-*", "brainstorming", "using-superpowers",
           ])
         }

@@ -62,6 +62,44 @@ test("initializes one scoped factory with environment options", async () => {
   assert.equal(config.skills.paths.length, 1)
 })
 
+test("reports a failing config hook without exposing staged mutations", async () => {
+  await assert.rejects(runIsolatedPlugin(`
+    const exported = (await import(PLUGIN_URL)).default
+    const plugin = exported.createForTesting({
+      opencodeVersion: () => "1.18.30",
+      superpowersVersion: () => "6.3.0",
+      skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
+      upstreamPlugin: async () => ({
+        config: async (config) => {
+          config.staged = { visible: true }
+          throw new Error("fixture hook failure")
+        },
+        "experimental.chat.messages.transform": async () => {},
+      }),
+    })
+    const hooks = await plugin({}, { agents: [] })
+    const retained = { nested: true }
+    const config = { retained }
+    try {
+      await hooks.config(config)
+    } catch (error) {
+      console.log(JSON.stringify({ config, sameReference: config.retained === retained }))
+      console.error(error.message)
+      process.exitCode = 1
+    }
+  `, { provisionDependencies: true }), (error: NodeJS.ErrnoException & {
+    stdout?: string
+    stderr?: string
+  }) => {
+    assert.match(error.stderr ?? "", /fixture hook failure/)
+    assert.deepEqual(JSON.parse(error.stdout ?? ""), {
+      config: { retained: { nested: true } },
+      sameReference: true,
+    })
+    return true
+  })
+})
+
 test("enables absent public and hidden built-ins through the real CLI", async () => {
   for (const agent of ["build", "general", "summary"]) {
     const { stderr, stdout } = await runOpenCode(["debug", "agent", agent], {
