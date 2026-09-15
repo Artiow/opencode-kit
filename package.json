@@ -9,11 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "opencode-ai": "1.18.31",
-    "superpowers": "git+https://github.com/obra/superpowers.git#v6.3.0",
-    "@opencode-ai/plugin": "^1.18.30",
-    "@types/node": "^22.18.0",
-    "tsx": "^4.23.1",
-    "typescript": "^5.9.2"
+    "@opencode-ai/sdk": "^1.18.31",
+    "@opencode-ai/plugin": "^1.18.31",
+    "superpowers": "github:obra/superpowers#v6.3.0",
+    "@types/node": "^22.20.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
   }
 }
