@@ -27,6 +27,7 @@ import type {
   Config,
   Hooks,
   Plugin,
+  PluginInput,
   PluginOptions,
 } from "@opencode-ai/plugin"
 import type {
@@ -111,6 +112,7 @@ const BUILT_IN_AGENTS = new Set([
   "title",
   "summary",
 ])
+const INTERNAL_AGENTS = new Set(["compaction", "title", "summary"])
 
 /**
  * Единственное имя upstream skill, которое plugin знает специально.
@@ -687,6 +689,25 @@ function currentAgent(messages: Messages): string | undefined {
 }
 
 
+type TransformInput = {
+  sessionID?: string
+}
+
+async function isDirectSession(
+  client: PluginInput["client"],
+  sessionID: string | undefined,
+): Promise<boolean> {
+  if (!sessionID) return false
+
+  try {
+    const result = await client.session.get({ path: { id: sessionID } })
+    return !result.error && !!result.data && result.data.parentID === undefined
+  } catch {
+    return false
+  }
+}
+
+
 /**
  * Главная plugin factory-функция OpenCode.
  *
@@ -873,7 +894,15 @@ function createSuperpowersAgentPlugin(
       async (hookInput, output) => {
         const agent = currentAgent(output.messages)
 
-        if (!agent || !enabledAgents.has(agent)) {
+        if (
+          !agent
+          || INTERNAL_AGENTS.has(agent)
+          || !enabledAgents.has(agent)
+          || !await isDirectSession(
+            input.client,
+            (hookInput as TransformInput).sessionID,
+          )
+        ) {
           return
         }
 

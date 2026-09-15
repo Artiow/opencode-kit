@@ -30,6 +30,7 @@ async function load(
     dir?: string
     upstream?: Upstream | unknown
     agents?: string[]
+    session?: { data?: { parentID?: string } | null; error?: unknown } | Error
   } = {},
 ): Promise<Hooks> {
   const fixture = overrides.dir ? undefined : skillsFixture()
@@ -44,7 +45,16 @@ async function load(
   })
 
   try {
-    return await plugin({} as never, { agents: overrides.agents ?? [] })
+    return await plugin({
+      client: {
+        session: {
+          get: async () => {
+            if (overrides.session instanceof Error) throw overrides.session
+            return overrides.session ?? { data: {} }
+          },
+        },
+      },
+    } as never, { agents: overrides.agents ?? [] })
   } finally {
     fixture?.cleanup()
   }
@@ -154,7 +164,7 @@ test("delegates both required upstream hooks", async () => {
 
   await hooks.config!(config)
   const transform = hooks["experimental.chat.messages.transform"]!
-  await transform({} as never, {
+  await transform({ sessionID: "direct" } as never, {
     messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }],
   } as never)
 
@@ -182,7 +192,7 @@ test("discards upstream mutations when upstream throws", async () => {
   const snapshot = structuredClone(config)
 
   await assert.rejects(hooks.config!(config as never), /upstream failed/)
-  await hooks["experimental.chat.messages.transform"]!({} as never, {
+  await hooks["experimental.chat.messages.transform"]!({ sessionID: "direct" } as never, {
     messages: [{ info: { role: "user", agent: "build" }, parts: [] }],
   } as never)
 
@@ -355,7 +365,7 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   const config: Record<string, any> = { agent: { superpowers } }
 
   await hooks.config!(config as never)
-  await hooks["experimental.chat.messages.transform"]!({} as never, {
+  await hooks["experimental.chat.messages.transform"]!({ sessionID: "direct" } as never, {
     messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }],
   } as never)
 
@@ -419,6 +429,111 @@ test("rejects an unknown agent", async () => {
     message: '[superpowers-agent] invalid configured agents:\n  "buidl" does not exist',
   })
 })
+
+for (const [name, mode] of [["primary", "primary"], ["subagent", "subagent"]] as const) {
+  test(`bootstraps a directly selected ${name} agent`, async () => {
+    let calls = 0
+    const hooks = await load({
+      agents: ["reviewer"],
+      upstream: {
+        config: async () => {},
+        "experimental.chat.messages.transform": async () => { calls++ },
+      },
+    })
+    await hooks.config!({ agent: { reviewer: { mode } } } as never)
+    await hooks["experimental.chat.messages.transform"]!(
+      { sessionID: "direct" } as never,
+      { messages: [{ info: { role: "user", agent: "reviewer" }, parts: [] }] } as never,
+    )
+    assert.equal(calls, 1)
+  })
+}
+
+test("does not bootstrap a dispatched session using the same enabled agent", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build"],
+    session: { data: { parentID: "parent" } },
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  const config: Record<string, any> = { agent: { build: {} } }
+  await hooks.config!(config as never)
+  await hooks["experimental.chat.messages.transform"]!(
+    { sessionID: "child" } as never,
+    { messages: [{ info: { role: "user", agent: "build" }, parts: [] }] } as never,
+  )
+  assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
+  assert.equal(calls, 0)
+})
+
+for (const [name, session, expected] of [
+  ["direct", { data: {} }, 1],
+  ["dispatched", { data: { parentID: "parent" } }, 0],
+] as const) {
+  test(`${name} generated superpowers agent bootstrap`, async () => {
+    let calls = 0
+    const hooks = await load({
+      session,
+      upstream: {
+        config: async () => {},
+        "experimental.chat.messages.transform": async () => { calls++ },
+      },
+    })
+    await hooks.config!({} as never)
+    await hooks["experimental.chat.messages.transform"]!(
+      { sessionID: name } as never,
+      { messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }] } as never,
+    )
+    assert.equal(calls, expected)
+  })
+}
+
+test("never bootstraps internal agents despite allowlisting", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["compaction", "title", "summary"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
+  await hooks.config!({} as never)
+  for (const agent of ["compaction", "title", "summary"]) {
+    await hooks["experimental.chat.messages.transform"]!(
+      { sessionID: "direct" } as never,
+      { messages: [{ info: { role: "user", agent }, parts: [] }] } as never,
+    )
+  }
+  assert.equal(calls, 0)
+})
+
+for (const [name, session, sessionID] of [
+  ["missing session id", { data: {} }, undefined],
+  ["missing session data", { data: null }, "unknown"],
+  ["session lookup error", { error: "missing" }, "unknown"],
+  ["session lookup rejection", new Error("missing"), "unknown"],
+] as const) {
+  test(`fails closed for ${name}`, async () => {
+    let calls = 0
+    const hooks = await load({
+      agents: ["build"],
+      session,
+      upstream: {
+        config: async () => {},
+        "experimental.chat.messages.transform": async () => { calls++ },
+      },
+    })
+    await hooks.config!({ agent: { build: {} } } as never)
+    await hooks["experimental.chat.messages.transform"]!(
+      { sessionID } as never,
+      { messages: [{ info: { role: "user", agent: "build" }, parts: [] }] } as never,
+    )
+    assert.equal(calls, 0)
+  })
+}
 
 test("reports every invalid agent in deterministic order", async () => {
   const hooks = await load({
