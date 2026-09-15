@@ -67,6 +67,7 @@ import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
  * plugin, объём каталога Superpowers мал, а код получается значительно проще.
  */
 import {
+  existsSync,
   readFileSync,
   readdirSync,
 } from "node:fs"
@@ -165,6 +166,8 @@ type Options = {
   agents: string[]
 }
 
+const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
+
 
 /**
  * Проверяет пользовательские options plugin.
@@ -203,6 +206,22 @@ function parseOptions(raw?: PluginOptions): Options {
   }
 }
 
+function environmentOptions(value: string | undefined): Options {
+  if (value === undefined) {
+    return { agents: [] }
+  }
+
+  let agents: unknown
+  try {
+    agents = JSON.parse(value)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`[superpowers-agent] invalid ${AGENTS_ENV}: ${detail}`)
+  }
+
+  return parseOptions({ agents } as PluginOptions)
+}
+
 
 /**
  * Находит физический каталог `superpowers/skills` через JavaScript module
@@ -222,9 +241,23 @@ function skillsDir(): string {
   return join(dirname(packageJson), "skills")
 }
 
-function packageVersion(specifier: string): string {
+function packageVersion(packageName: string): string {
   try {
-    const packageJson = fileURLToPath(import.meta.resolve(specifier))
+    let directory: string
+    try {
+      directory = dirname(fileURLToPath(
+        import.meta.resolve(`${packageName}/package.json`),
+      ))
+    } catch {
+      directory = dirname(fileURLToPath(import.meta.resolve(packageName)))
+      while (!existsSync(join(directory, "package.json"))) {
+        const parent = dirname(directory)
+        if (parent === directory) return "<unresolved>"
+        directory = parent
+      }
+    }
+
+    const packageJson = join(directory, "package.json")
     const manifest = JSON.parse(readFileSync(packageJson, "utf8")) as {
       version?: unknown
     }
@@ -335,8 +368,8 @@ type Dependencies = {
 }
 
 const dependencies: Dependencies = {
-  opencodeVersion: () => packageVersion("@opencode-ai/plugin/package.json"),
-  superpowersVersion: () => packageVersion("superpowers/package.json"),
+  opencodeVersion: () => packageVersion("@opencode-ai/plugin"),
+  superpowersVersion: () => packageVersion("superpowers"),
   skillsDir,
   upstreamPlugin: UpstreamSuperpowersPlugin,
 }
@@ -527,7 +560,7 @@ function currentAgent(messages: Messages): string | undefined {
  * Результат функции — object hook-ов, которые OpenCode затем вызывает на
  * соответствующих стадиях lifecycle.
  */
-export function createSuperpowersAgentPlugin(
+function createSuperpowersAgentPlugin(
   overrides: Partial<Dependencies> = {},
 ): Plugin {
   const deps = { ...dependencies, ...overrides }
@@ -690,4 +723,18 @@ export function createSuperpowersAgentPlugin(
   }
 }
 
-export const SuperpowersAgentPlugin: Plugin = createSuperpowersAgentPlugin()
+type AutoDiscoveredPlugin = Plugin & {
+  createForTesting: typeof createSuperpowersAgentPlugin
+}
+
+const autoDiscoveredOptions = environmentOptions(
+  process.env[AGENTS_ENV],
+)
+const scopedPlugin = createSuperpowersAgentPlugin()
+
+const SuperpowersAgentPlugin = Object.assign(
+  (async (input) => scopedPlugin(input, autoDiscoveredOptions)) satisfies Plugin,
+  { createForTesting: createSuperpowersAgentPlugin },
+) satisfies AutoDiscoveredPlugin
+
+export default SuperpowersAgentPlugin

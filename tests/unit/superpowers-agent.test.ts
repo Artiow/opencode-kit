@@ -5,7 +5,9 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 
 import type { Hooks, Plugin } from "@opencode-ai/plugin"
-import { createSuperpowersAgentPlugin } from "../../plugins/superpowers-agent"
+import SuperpowersAgentPlugin from "../../plugins/superpowers-agent"
+
+const createSuperpowersAgentPlugin = SuperpowersAgentPlugin.createForTesting
 
 type Upstream = Awaited<ReturnType<Plugin>>
 
