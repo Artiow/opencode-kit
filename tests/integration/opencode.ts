@@ -36,6 +36,7 @@ type RunOptions = {
   env?: Record<string, string>
   installSuperpowersAgent?: boolean
   provisionDependencies?: boolean
+  setup?: (fixture: { root: string; home: string }) => Promise<void>
 }
 
 export async function runOpenCode(args: string[], options: RunOptions = {}) {
@@ -47,6 +48,7 @@ export async function runOpenCode(args: string[], options: RunOptions = {}) {
   }
 
   try {
+    await options.setup?.({ root, home })
     return await execFileAsync(opencodeBin, args, {
       cwd: root,
       env: {

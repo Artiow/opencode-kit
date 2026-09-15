@@ -358,16 +358,22 @@ function skillName(file: string): string {
  * содержит сопровождаемый вручную список имён. После обновления Superpowers
  * новый skill автоматически попадёт в generated permissions.
  */
-function discoverSkills(dir: string): string[] {
-  const skills: string[] = []
+type DiscoveredSkill = {
+  name: string
+  path: string
+}
 
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+function discoverSkills(dir: string): DiscoveredSkill[] {
+  const skills: DiscoveredSkill[] = []
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))) {
     const path = join(dir, entry.name)
 
     if (entry.isDirectory()) {
       skills.push(...discoverSkills(path))
     } else if (entry.name === "SKILL.md") {
-      skills.push(skillName(path))
+      skills.push({ name: skillName(path), path })
     }
   }
 
@@ -645,29 +651,43 @@ function createSuperpowersAgentPlugin(
    * Наш собственный discovery нужен только для permissions. Само содержимое
    * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
    */
-  let skills: string[]
+  let discoveredSkills: DiscoveredSkill[]
   try {
-    skills = discoverSkills(dir)
+    discoveredSkills = discoverSkills(dir)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(
       `[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`,
     )
   }
-  const uniqueSkills = [...new Set(skills)]
+  const skillsByName = new Map<string, DiscoveredSkill[]>()
+  for (const skill of discoveredSkills) {
+    const matches = skillsByName.get(skill.name) ?? []
+    matches.push(skill)
+    skillsByName.set(skill.name, matches)
+  }
+  const conflicts = [...skillsByName]
+    .filter(([, skills]) => skills.length > 1)
+    .sort(([left], [right]) => left.localeCompare(right))
 
-  if (!uniqueSkills.length) {
+  if (!discoveredSkills.length) {
     throw new Error(
       `[superpowers-agent] no Superpowers skills found in ${dir}`,
     )
   }
 
-  if (uniqueSkills.length !== skills.length) {
-    /** Два SKILL.md с одним `name` сделали бы permission mapping неоднозначным. */
+  if (conflicts.length) {
+    /** Permissions identify skills only by name, so bundled names must be unique. */
+    const detail = conflicts.map(([name, skills]) => [
+      `duplicate bundled skill name "${name}":`,
+      ...skills.map((skill) => `  ${skill.path}`).sort(),
+    ].join("\n")).join("\n")
     throw new Error(
-      "[superpowers-agent] duplicate Superpowers skill names found",
+      `[superpowers-agent] ${detail}`,
     )
   }
+
+  const uniqueSkills = discoveredSkills.map((skill) => skill.name)
 
   if (!uniqueSkills.includes(POLICY_SKILL)) {
     /** Без upstream policy skill невозможно получить полный Superpowers mode. */

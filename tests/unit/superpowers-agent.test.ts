@@ -86,10 +86,35 @@ test("rejects an empty skills directory", async () => {
   }
 })
 
-test("rejects malformed, duplicate, and missing policy skills", async (t) => {
+test("reports all bundled duplicate names and sorted SKILL.md paths", async () => {
+  const fixture = skillsFixture([
+    ["z-policy", "using-superpowers"],
+    ["a-brain", "brainstorming"],
+    ["y-policy", "using-superpowers"],
+    ["z-brain", "brainstorming"],
+  ])
+  try {
+    await assert.rejects(load({ dir: fixture.dir }), (error: Error) => {
+      const brainPaths = ["a-brain", "z-brain"]
+        .map((folder) => join(fixture.dir, folder, "SKILL.md"))
+      const policyPaths = ["y-policy", "z-policy"]
+        .map((folder) => join(fixture.dir, folder, "SKILL.md"))
+      assert.match(error.message, new RegExp([
+        'duplicate bundled skill name "brainstorming":',
+        ...brainPaths,
+        'duplicate bundled skill name "using-superpowers":',
+        ...policyPaths,
+      ].map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]*")))
+      return true
+    })
+  } finally {
+    fixture.cleanup()
+  }
+})
+
+test("rejects malformed and missing policy skills", async (t) => {
   const cases: Array<[string, Array<[string, string]>, RegExp]> = [
     ["malformed", [["bad", ""]], /skill has no valid name/],
-    ["duplicate", [["one", "using-superpowers"], ["two", "using-superpowers"]], /duplicate Superpowers skill names/],
     ["missing policy", [["brainstorming", "brainstorming"]], /required skill "using-superpowers" not found/],
   ]
 
