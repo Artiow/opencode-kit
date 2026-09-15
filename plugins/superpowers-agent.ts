@@ -135,17 +135,12 @@ type Action = PermissionActionConfig
  */
 type SkillPermissions = Record<string, Action>
 
-type RuntimePermissionConfig = Exclude<
-  PermissionConfig,
-  PermissionActionConfig
->
-
 type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & {
-  permission?: RuntimePermissionConfig
+  permission?: PermissionConfig
 }
 
 type RuntimeConfig = Omit<Config, "permission" | "agent"> & {
-  permission?: RuntimePermissionConfig
+  permission?: PermissionConfig
   agent?: Record<string, RuntimeAgentConfig>
 }
 
@@ -410,6 +405,28 @@ function permissions(
 }
 
 
+function isAction(value: unknown): value is Action {
+  return value === "allow" || value === "ask" || value === "deny"
+}
+
+
+/** Приводит schema-valid top-level permission к object-форме для mutation. */
+function normalizePermission(
+  current: unknown,
+  location: string,
+): Exclude<PermissionConfig, PermissionActionConfig> {
+  if (current === undefined) return {}
+  if (isAction(current)) return { "*": current }
+  if (current && typeof current === "object" && !Array.isArray(current)) {
+    return current as Exclude<PermissionConfig, PermissionActionConfig>
+  }
+
+  throw new Error(
+    `[superpowers-agent] ${location} must be a permission action or object`,
+  )
+}
+
+
 /**
  * Нормализует и merge-ит существующий `permission.skill` с нашими правилами.
  *
@@ -435,12 +452,17 @@ function mergePermissions(
   current: unknown,
   added: SkillPermissions,
 ): SkillPermissions {
-  const existing: SkillPermissions =
-    typeof current === "string"
-      ? { "*": current as Action }
-      : current && typeof current === "object"
+  const existing: SkillPermissions = current === undefined
+    ? {}
+    : isAction(current)
+      ? { "*": current }
+      : current && typeof current === "object" && !Array.isArray(current)
         ? { ...(current as SkillPermissions) }
-        : {}
+        : (() => {
+            throw new Error(
+              "[superpowers-agent] permission.skill must be a permission action or object",
+            )
+          })()
 
   /**
    * `Object.entries(existing)` превращает object в `[key, value][]`.
@@ -467,11 +489,8 @@ function denyGlobally(
   config: RuntimeConfig,
   denied: SkillPermissions,
 ): void {
-  /**
-   * `??=` — nullish assignment: присваивает `{}` только если слева
-   * null/undefined. Уже существующий config не перезаписывается.
-   */
-  config.permission ??= {}
+  /** Scalar shorthand нельзя мутировать, поэтому сначала нормализуем весь map. */
+  config.permission = normalizePermission(config.permission, "permission")
   config.permission.skill =
     mergePermissions(config.permission.skill, denied)
 }
@@ -505,7 +524,10 @@ function enableAgent(
     )
   }
 
-  agent.permission ??= {}
+  agent.permission = normalizePermission(
+    agent.permission,
+    `agent.${name}.permission`,
+  )
   agent.permission.skill =
     mergePermissions(agent.permission.skill, allowed)
 }

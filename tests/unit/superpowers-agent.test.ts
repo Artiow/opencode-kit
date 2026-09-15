@@ -29,6 +29,7 @@ async function load(
     superpowersVersion?: string
     dir?: string
     upstream?: Upstream | unknown
+    agents?: string[]
   } = {},
 ): Promise<Hooks> {
   const fixture = overrides.dir ? undefined : skillsFixture()
@@ -43,7 +44,7 @@ async function load(
   })
 
   try {
-    return await plugin({} as never)
+    return await plugin({} as never, { agents: overrides.agents ?? [] })
   } finally {
     fixture?.cleanup()
   }
@@ -136,3 +137,109 @@ test("delegates both required upstream hooks", async () => {
   assert.strictEqual(upstreamConfig, config)
   assert.equal(transformCalls, 1)
 })
+
+type PermissionShape = "missing" | "scalar" | "object"
+
+const permissionShapes: PermissionShape[] = ["missing", "scalar", "object"]
+const skillShapes: PermissionShape[] = ["missing", "scalar", "object"]
+
+function permissionFixture(
+  permissionShape: PermissionShape,
+  skillShape: PermissionShape,
+): unknown {
+  if (permissionShape === "missing") return undefined
+  if (permissionShape === "scalar") return "ask"
+
+  const permission: Record<string, unknown> = {
+    bash: { "git status": "allow" },
+    edit: "ask",
+    custom: { retained: true },
+  }
+  if (skillShape === "scalar") permission.skill = "ask"
+  if (skillShape === "object") {
+    permission.skill = {
+      "*": "ask",
+      "private-*": "deny",
+      brainstorming: "ask",
+    }
+  }
+  return permission
+}
+
+for (const permissionShape of permissionShapes) {
+  for (const skillShape of skillShapes) {
+    test(`normalizes global ${permissionShape} permission with ${skillShape} skill`, async () => {
+      const hooks = await load()
+      const original = permissionFixture(permissionShape, skillShape)
+      const config: Record<string, any> = { agent: {} }
+      if (original !== undefined) config.permission = original
+
+      await assert.doesNotReject(hooks.config!(config as never))
+
+      assert.equal(config.permission.skill.brainstorming, "deny")
+      assert.equal(config.permission.skill["using-superpowers"], "deny")
+      if (permissionShape === "scalar") {
+        assert.equal(config.permission["*"], "ask")
+      } else if (permissionShape === "object") {
+        assert.deepEqual(config.permission.bash, { "git status": "allow" })
+        assert.equal(config.permission.edit, "ask")
+        assert.deepEqual(config.permission.custom, { retained: true })
+        if (skillShape === "scalar") assert.equal(config.permission.skill["*"], "ask")
+        if (skillShape === "object") {
+          assert.equal(config.permission.skill["*"], "ask")
+          assert.equal(config.permission.skill["private-*"], "deny")
+          assert.deepEqual(Object.keys(config.permission.skill), [
+            "*", "private-*", "brainstorming", "using-superpowers",
+          ])
+        }
+      }
+    })
+
+    test(`normalizes enabled-agent ${permissionShape} permission with ${skillShape} skill`, async () => {
+      const hooks = await load({ agents: ["build"] })
+      const original = permissionFixture(permissionShape, skillShape)
+      const build: Record<string, any> = {
+        model: "provider/model",
+        temperature: 0.25,
+        customAgentField: { retained: true },
+      }
+      if (original !== undefined) build.permission = original
+      const config: Record<string, any> = { agent: { build } }
+
+      await assert.doesNotReject(hooks.config!(config as never))
+
+      assert.equal(build.permission.skill.brainstorming, "allow")
+      assert.equal(build.permission.skill["using-superpowers"], "deny")
+      assert.equal(build.model, "provider/model")
+      assert.equal(build.temperature, 0.25)
+      assert.deepEqual(build.customAgentField, { retained: true })
+      if (permissionShape === "scalar") {
+        assert.equal(build.permission["*"], "ask")
+      } else if (permissionShape === "object") {
+        assert.deepEqual(build.permission.bash, { "git status": "allow" })
+        assert.equal(build.permission.edit, "ask")
+        assert.deepEqual(build.permission.custom, { retained: true })
+        if (skillShape === "scalar") assert.equal(build.permission.skill["*"], "ask")
+        if (skillShape === "object") {
+          assert.equal(build.permission.skill["*"], "ask")
+          assert.equal(build.permission.skill["private-*"], "deny")
+          assert.deepEqual(Object.keys(build.permission.skill), [
+            "*", "private-*", "brainstorming", "using-superpowers",
+          ])
+        }
+      }
+    })
+  }
+}
+
+for (const [name, config, agents, expected] of [
+  ["global permission", { permission: true, agent: {} }, [], /permission must/],
+  ["global skill", { permission: { skill: true }, agent: {} }, [], /permission\.skill must/],
+  ["agent permission", { agent: { build: { permission: true } } }, ["build"], /agent\.build\.permission must/],
+  ["agent skill", { agent: { build: { permission: { skill: true } } } }, ["build"], /permission\.skill must/],
+] as const) {
+  test(`rejects invalid ${name} form`, async () => {
+    const hooks = await load({ agents: [...agents] })
+    await assert.rejects(hooks.config!(config as never), expected)
+  })
+}
