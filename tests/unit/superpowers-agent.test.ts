@@ -163,6 +163,100 @@ test("delegates both required upstream hooks", async () => {
   assert.equal(transformCalls, 1)
 })
 
+test("creates the default superpowers agent when absent", async () => {
+  const hooks = await load()
+  const config: Record<string, any> = {}
+
+  await hooks.config!(config as never)
+
+  assert.deepEqual(config.agent.superpowers, {
+    mode: "primary",
+    description: "OpenCode with the full Superpowers workflow",
+    permission: {
+      skill: {
+        brainstorming: "allow",
+        "using-superpowers": "deny",
+      },
+    },
+  })
+  assert.equal("model" in config.agent.superpowers, false)
+})
+
+test("augments a customized superpowers agent without a collision", async () => {
+  const hooks = await load()
+  const superpowers: Record<string, any> = {
+    model: "provider/custom",
+    description: "Custom description",
+    prompt: "Custom prompt",
+    temperature: 0.2,
+    customAgentField: { retained: true },
+    permission: {
+      bash: { "git status": "allow" },
+      skill: {
+        "private-*": "ask",
+        brainstorming: "deny",
+      },
+    },
+  }
+  const config: Record<string, any> = { agent: { superpowers } }
+
+  await hooks.config!(config as never)
+
+  assert.strictEqual(config.agent.superpowers, superpowers)
+  assert.equal(superpowers.mode, "primary")
+  assert.equal(superpowers.model, "provider/custom")
+  assert.equal(superpowers.description, "Custom description")
+  assert.equal(superpowers.prompt, "Custom prompt")
+  assert.equal(superpowers.temperature, 0.2)
+  assert.deepEqual(superpowers.customAgentField, { retained: true })
+  assert.deepEqual(superpowers.permission.bash, { "git status": "allow" })
+  assert.deepEqual(Object.entries(superpowers.permission.skill), [
+    ["private-*", "ask"],
+    ["brainstorming", "allow"],
+    ["using-superpowers", "deny"],
+  ])
+})
+
+test("retains an explicit superpowers mode", async () => {
+  const hooks = await load()
+  const config: Record<string, any> = {
+    agent: { superpowers: { mode: "subagent" } },
+  }
+
+  await hooks.config!(config as never)
+
+  assert.equal(config.agent.superpowers.mode, "subagent")
+})
+
+test("leaves a disabled superpowers agent untouched and suppresses bootstrap", async () => {
+  let transformCalls = 0
+  const hooks = await load({
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { transformCalls++ },
+    },
+  })
+  const superpowers = {
+    disable: true,
+    description: "Disabled by user",
+    permission: { bash: "ask" },
+  }
+  const config: Record<string, any> = { agent: { superpowers } }
+
+  await hooks.config!(config as never)
+  await hooks["experimental.chat.messages.transform"]!({} as never, {
+    messages: [{ info: { role: "user", agent: "superpowers" }, parts: [] }],
+  } as never)
+
+  assert.strictEqual(config.agent.superpowers, superpowers)
+  assert.deepEqual(superpowers, {
+    disable: true,
+    description: "Disabled by user",
+    permission: { bash: "ask" },
+  })
+  assert.equal(transformCalls, 0)
+})
+
 type PermissionShape = "missing" | "scalar" | "object"
 type Action = "allow" | "ask" | "deny"
 

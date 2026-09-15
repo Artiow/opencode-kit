@@ -17,6 +17,32 @@ test("auto-discovers only the wrapper from the global plugins directory", async 
   assert.match(config.plugin[0], /\/plugins\/superpowers-agent\.ts$/)
 })
 
+test("debug config preserves superpowers agent customization", async () => {
+  const { stderr, stdout } = await runOpenCode(["debug", "config"], {
+    installSuperpowersAgent: true,
+    provisionDependencies: true,
+    config: {
+      $schema: "https://opencode.ai/config.json",
+      agent: {
+        superpowers: {
+          mode: "subagent",
+          description: "Custom Superpowers",
+          temperature: 0.2,
+          permission: { bash: "ask" },
+        },
+      },
+    },
+  })
+  const config = JSON.parse(stdout)
+  const superpowers = config.agent.superpowers
+
+  assert.equal(stderr, "")
+  assert.equal(superpowers.mode, "subagent")
+  assert.equal(superpowers.description, "Custom Superpowers")
+  assert.equal(superpowers.temperature, 0.2)
+  assert.equal(superpowers.permission.bash, "ask")
+})
+
 test("initializes one scoped factory with environment options", async () => {
   const { stdout } = await runIsolatedPlugin(`
     const plugin = (await import(PLUGIN_URL)).default

@@ -99,8 +99,9 @@ import {
 } from "node:path"
 
 
-/** Имя primary agent, автоматически создаваемого этим plugin. */
+/** Имя agent, автоматически создаваемого этим plugin. */
 const SUPERPOWERS_AGENT = "superpowers"
+const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
 
 /**
  * Единственное имя upstream skill, которое plugin знает специально.
@@ -545,34 +546,30 @@ function enableAgent(
 
 
 /**
- * Создаёт отдельный selectable primary agent `superpowers`.
+ * Создаёт или дополняет selectable agent `superpowers`.
  *
- * OpenCode API: `config.agent[name]` и `mode: "primary"`.
+ * OpenCode API: `config.agent[name]`; `mode: "primary"` — default при создании.
  *
  * Мы сознательно НЕ задаём `prompt`: custom `agent.prompt` в OpenCode заменяет
  * обычный provider/base prompt, а нам нужен стандартный OpenCode prompt плюс
  * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
  */
-function createSuperpowersAgent(
+function configureSuperpowersAgent(
   config: RuntimeConfig,
   allowed: SkillPermissions,
-): void {
+): boolean {
   config.agent ??= {}
 
-  if (config.agent[SUPERPOWERS_AGENT]) {
-    /** Не перезаписываем пользовательского agent с конфликтующим именем. */
-    throw new Error(
-      `[superpowers-agent] agent "${SUPERPOWERS_AGENT}" already exists`,
-    )
+  const configured = config.agent[SUPERPOWERS_AGENT]
+  if (configured?.disable === true) {
+    return false
   }
 
-  config.agent[SUPERPOWERS_AGENT] = {
-    mode: "primary",
-    description: "OpenCode with the full Superpowers workflow",
-    permission: {
-      skill: allowed,
-    },
-  }
+  const agent = configured ?? (config.agent[SUPERPOWERS_AGENT] = {})
+  agent.mode ??= "primary"
+  agent.description ??= SUPERPOWERS_DESCRIPTION
+  enableAgent(config, SUPERPOWERS_AGENT, allowed)
+  return true
 }
 
 
@@ -721,10 +718,7 @@ function createSuperpowersAgentPlugin(
    * Одно и то же множество используется для access-control и bootstrap scope.
    * Это исключает состояние "skills разрешены, но bootstrap не включён".
    */
-  const enabledAgents = new Set([
-    ...options.agents,
-    SUPERPOWERS_AGENT,
-  ])
+  const enabledAgents = new Set(options.agents)
 
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
     /**
@@ -749,8 +743,12 @@ function createSuperpowersAgentPlugin(
       enableAgent(runtimeConfig, agent, enabled)
     }
 
-    /** Наш generated agent получает те же permissions, что custom enabled. */
-    createSuperpowersAgent(runtimeConfig, enabled)
+    /** Итоговая config.agent запись определяет bootstrap scope этого agent. */
+    if (configureSuperpowersAgent(runtimeConfig, enabled)) {
+      enabledAgents.add(SUPERPOWERS_AGENT)
+    } else {
+      enabledAgents.delete(SUPERPOWERS_AGENT)
+    }
   }
 
   return {
