@@ -257,6 +257,80 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   assert.equal(transformCalls, 0)
 })
 
+test("enables every absent OpenCode 1.18.31 built-in agent", async () => {
+  const agents = [
+    "build", "plan", "general", "explore", "compaction", "title", "summary",
+  ]
+  const hooks = await load({ agents })
+  const config: Record<string, any> = {}
+
+  await hooks.config!(config as never)
+
+  for (const agent of agents) {
+    assert.deepEqual(config.agent[agent], {
+      permission: {
+        skill: {
+          brainstorming: "allow",
+          "using-superpowers": "deny",
+        },
+      },
+    })
+  }
+})
+
+test("enables a configured custom agent regardless of mode or visibility", async () => {
+  const hooks = await load({ agents: ["internal-reviewer"] })
+  const custom = { mode: "primary", hidden: true }
+  const config: Record<string, any> = { agent: { "internal-reviewer": custom } }
+
+  await hooks.config!(config as never)
+
+  assert.strictEqual(config.agent["internal-reviewer"], custom)
+  assert.equal((custom as any).permission.skill.brainstorming, "allow")
+})
+
+for (const [name, config] of [
+  ["built-in", { agent: { build: { disable: true } } }],
+  ["custom", { agent: { reviewer: { disable: true } } }],
+] as const) {
+  test(`rejects a disabled ${name} agent`, async () => {
+    const agent = name === "built-in" ? "build" : "reviewer"
+    const hooks = await load({ agents: [agent] })
+    await assert.rejects(hooks.config!(config as never), {
+      message: `[superpowers-agent] invalid configured agents:\n  "${agent}" is disabled`,
+    })
+  })
+}
+
+test("rejects an unknown agent", async () => {
+  const hooks = await load({ agents: ["buidl"] })
+  await assert.rejects(hooks.config!({} as never), {
+    message: '[superpowers-agent] invalid configured agents:\n  "buidl" does not exist',
+  })
+})
+
+test("reports every invalid agent in deterministic order", async () => {
+  const hooks = await load({
+    agents: ["z-unknown", "reviewer", "a-unknown", "build"],
+  })
+  const config = {
+    agent: {
+      build: { disable: true },
+      reviewer: { disable: true },
+    },
+  }
+
+  await assert.rejects(hooks.config!(config as never), {
+    message: [
+      "[superpowers-agent] invalid configured agents:",
+      '  "a-unknown" does not exist',
+      '  "build" is disabled',
+      '  "reviewer" is disabled',
+      '  "z-unknown" does not exist',
+    ].join("\n"),
+  })
+})
+
 type PermissionShape = "missing" | "scalar" | "object"
 type Action = "allow" | "ask" | "deny"
 

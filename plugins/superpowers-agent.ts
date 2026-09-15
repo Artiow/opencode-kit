@@ -102,6 +102,15 @@ import {
 /** Имя agent, автоматически создаваемого этим plugin. */
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
+const BUILT_IN_AGENTS = new Set([
+  "build",
+  "plan",
+  "general",
+  "explore",
+  "compaction",
+  "title",
+  "summary",
+])
 
 /**
  * Единственное имя upstream skill, которое plugin знает специально.
@@ -545,6 +554,22 @@ function enableAgent(
 }
 
 
+function validateAgents(config: RuntimeConfig, names: string[]): void {
+  const invalid = names.flatMap((name) => {
+    const configured = config.agent?.[name]
+    if (configured?.disable === true) return [`  "${name}" is disabled`]
+    if (configured || BUILT_IN_AGENTS.has(name)) return []
+    return [`  "${name}" does not exist`]
+  }).sort()
+
+  if (invalid.length) {
+    throw new Error(
+      `[superpowers-agent] invalid configured agents:\n${invalid.join("\n")}`,
+    )
+  }
+}
+
+
 /**
  * Создаёт или дополняет selectable agent `superpowers`.
  *
@@ -721,6 +746,11 @@ function createSuperpowersAgentPlugin(
   const enabledAgents = new Set(options.agents)
 
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
+    const runtimeConfig = config as RuntimeConfig
+
+    /** Built-ins are registered after config hooks, so validate against both sources. */
+    validateAgents(runtimeConfig, options.agents)
+
     /**
      * Делегируем upstream его собственную регистрацию skills path.
      *
@@ -730,7 +760,6 @@ function createSuperpowersAgentPlugin(
      * workaround из README, а не логика этого wrapper-а.
      */
     await upstream.config(config)
-    const runtimeConfig = config as RuntimeConfig
 
     /** После upstream config накладываем наш access-control. */
     denyGlobally(runtimeConfig, denied)
@@ -740,6 +769,8 @@ function createSuperpowersAgentPlugin(
      * автоматически остаются под global deny.
      */
     for (const agent of options.agents) {
+      runtimeConfig.agent ??= {}
+      runtimeConfig.agent[agent] ??= {}
       enableAgent(runtimeConfig, agent, enabled)
     }
 
