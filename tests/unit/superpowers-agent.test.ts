@@ -113,9 +113,14 @@ test("rejects missing required upstream hooks", async () => {
 test("delegates both required upstream hooks", async () => {
   let configCalls = 0
   let transformCalls = 0
+  type HookConfig = Parameters<NonNullable<Hooks["config"]>>[0]
+  let upstreamConfig: HookConfig | undefined
   const hooks = await load({
     upstream: {
-      config: async () => { configCalls++ },
+      config: async (config: HookConfig) => {
+        configCalls++
+        upstreamConfig = config
+      },
       "experimental.chat.messages.transform": async () => { transformCalls++ },
     },
   })
@@ -128,5 +133,6 @@ test("delegates both required upstream hooks", async () => {
   } as never)
 
   assert.equal(configCalls, 1)
+  assert.strictEqual(upstreamConfig, config)
   assert.equal(transformCalls, 1)
 })

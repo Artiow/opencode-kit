@@ -29,6 +29,11 @@ import type {
   Plugin,
   PluginOptions,
 } from "@opencode-ai/plugin"
+import type {
+  AgentConfig,
+  PermissionActionConfig,
+  PermissionConfig,
+} from "@opencode-ai/sdk/v2"
 
 /**
  * Статически импортируем именно upstream OpenCode plugin из package
@@ -114,7 +119,7 @@ const EXPECTED_SUPERPOWERS_VERSION = "6.3.0"
  * String literal union в TypeScript — ближайший аналог enum с ровно тремя
  * допустимыми строковыми значениями, но без отдельного runtime enum-объекта.
  */
-type Action = "allow" | "ask" | "deny"
+type Action = PermissionActionConfig
 
 /**
  * `Record<K, V>` — стандартный TypeScript utility type.
@@ -129,6 +134,20 @@ type Action = "allow" | "ask" | "deny"
  *   }
  */
 type SkillPermissions = Record<string, Action>
+
+type RuntimePermissionConfig = Exclude<
+  PermissionConfig,
+  PermissionActionConfig
+>
+
+type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & {
+  permission?: RuntimePermissionConfig
+}
+
+type RuntimeConfig = Omit<Config, "permission" | "agent"> & {
+  permission?: RuntimePermissionConfig
+  agent?: Record<string, RuntimeAgentConfig>
+}
 
 /**
  * Получаем тип `messages` непосредственно из официального типа hook-а OpenCode,
@@ -445,7 +464,7 @@ function mergePermissions(
  * `build`, `plan`, `general`, `explore` и произвольных пользовательских agents.
  */
 function denyGlobally(
-  config: Config,
+  config: RuntimeConfig,
   denied: SkillPermissions,
 ): void {
   /**
@@ -466,7 +485,7 @@ function denyGlobally(
  * не меняются.
  */
 function enableAgent(
-  config: Config,
+  config: RuntimeConfig,
   name: string,
   allowed: SkillPermissions,
 ): void {
@@ -502,7 +521,7 @@ function enableAgent(
  * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
  */
 function createSuperpowersAgent(
-  config: Config,
+  config: RuntimeConfig,
   allowed: SkillPermissions,
 ): void {
   config.agent ??= {}
@@ -660,36 +679,39 @@ function createSuperpowersAgentPlugin(
     SUPERPOWERS_AGENT,
   ])
 
+  const configHook: NonNullable<Hooks["config"]> = async (config) => {
+    /**
+     * Делегируем upstream его собственную регистрацию skills path.
+     *
+     * Upstream знает собственный package layout и добавляет свой `skills/`
+     * в `config.skills.paths`. Из-за известного OpenCode lifecycle bug этот
+     * путь иногда приходится дополнительно прописывать статически; это
+     * workaround из README, а не логика этого wrapper-а.
+     */
+    await upstream.config(config)
+    const runtimeConfig = config as RuntimeConfig
+
+    /** После upstream config накладываем наш access-control. */
+    denyGlobally(runtimeConfig, denied)
+
+    /**
+     * Перебираем только explicit allowlist пользователя. Все остальные agents
+     * автоматически остаются под global deny.
+     */
+    for (const agent of options.agents) {
+      enableAgent(runtimeConfig, agent, enabled)
+    }
+
+    /** Наш generated agent получает те же permissions, что custom enabled. */
+    createSuperpowersAgent(runtimeConfig, enabled)
+  }
+
   return {
     /**
      * OpenCode `config` hook вызывается во время построения runtime config.
      * Callback мутирует переданный `config` object in-place.
      */
-    config: async (config) => {
-      /**
-       * Делегируем upstream его собственную регистрацию skills path.
-       *
-       * Upstream знает собственный package layout и добавляет свой `skills/`
-       * в `config.skills.paths`. Из-за известного OpenCode lifecycle bug этот
-       * путь иногда приходится дополнительно прописывать статически; это
-       * workaround из README, а не логика этого wrapper-а.
-       */
-      await upstream.config(config)
-
-      /** После upstream config накладываем наш access-control. */
-      denyGlobally(config, denied)
-
-      /**
-       * Перебираем только explicit allowlist пользователя. Все остальные agents
-       * автоматически остаются под global deny.
-       */
-      for (const agent of options.agents) {
-        enableAgent(config, agent, enabled)
-      }
-
-      /** Наш generated agent получает те же permissions, что custom enabled. */
-      createSuperpowersAgent(config, enabled)
-    },
+    config: configHook,
 
     /**
      * Experimental OpenCode hook вызывается непосредственно перед model call и
