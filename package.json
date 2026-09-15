@@ -11,6 +11,7 @@
   "devDependencies": {
     "@opencode-ai/sdk": "^1.18.31",
     "@opencode-ai/plugin": "^1.18.31",
+    "opencode-ai": "1.18.31",
     "superpowers": "github:obra/superpowers#v6.3.0",
     "@types/node": "^22.20.2",
     "tsx": "^4.23.13",
