@@ -447,6 +447,11 @@ function normalizePermission(
  * Generated rules добавляются в конец. Для OpenCode порядок granular rules
  * значим: при нескольких matching rules более позднее правило должно иметь
  * возможность переопределить более общее пользовательское wildcard-правило.
+ * Wrapper владеет exact rules для всех bundled Superpowers skill names:
+ * пользовательские exact keys удаляются, а generated keys добавляются после
+ * всех сохранённых правил. Wildcard и unrelated rules сохраняют исходный
+ * relative order; их action не ранжируются, потому что OpenCode использует
+ * последнее matching rule.
  */
 function mergePermissions(
   current: unknown,

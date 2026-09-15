@@ -139,6 +139,7 @@ test("delegates both required upstream hooks", async () => {
 })
 
 type PermissionShape = "missing" | "scalar" | "object"
+type Action = "allow" | "ask" | "deny"
 
 const permissionShapes: PermissionShape[] = ["missing", "scalar", "object"]
 const skillShapes: PermissionShape[] = ["missing", "scalar", "object"]
@@ -164,6 +165,104 @@ function permissionFixture(
     }
   }
   return permission
+}
+
+function resolveSkillPermission(
+  rules: Record<string, Action>,
+  skill: string,
+): Action | undefined {
+  let result: Action | undefined
+  for (const [pattern, action] of Object.entries(rules)) {
+    const expression = new RegExp(
+      `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
+    )
+    if (expression.test(skill)) result = action
+  }
+  return result
+}
+
+const ownershipCases: Array<{
+  name: string
+  rules: Record<string, Action>
+  retained: Array<[string, Action]>
+}> = [
+  ...(["allow", "ask", "deny"] as const).map((action) => ({
+    name: `exact ${action}`,
+    rules: Object.fromEntries([
+      ["alpha", "ask"],
+      ["brainstorming", action],
+      ["using-superpowers", action],
+      ["omega", "allow"],
+    ]) as Record<string, Action>,
+    retained: [["alpha", "ask"], ["omega", "allow"]] as Array<[string, Action]>,
+  })),
+  ...(["allow", "ask", "deny"] as const).map((action) => ({
+    name: `wildcard ${action}`,
+    rules: Object.fromEntries([
+      ["alpha", "deny"],
+      ["brain*", action],
+      ["omega", "ask"],
+    ]) as Record<string, Action>,
+    retained: [
+      ["alpha", "deny"],
+      ["brain*", action],
+      ["omega", "ask"],
+    ] as Array<[string, Action]>,
+  })),
+  {
+    name: "mixed *, brain*, exact ordering",
+    rules: Object.fromEntries([
+      ["*", "allow"],
+      ["alpha", "deny"],
+      ["brain*", "deny"],
+      ["brainstorming", "ask"],
+      ["omega", "allow"],
+    ]),
+    retained: [
+      ["*", "allow"],
+      ["alpha", "deny"],
+      ["brain*", "deny"],
+      ["omega", "allow"],
+    ],
+  },
+]
+
+for (const scope of ["global", "enabled-agent"] as const) {
+  for (const testCase of ownershipCases) {
+    test(`${scope} owns bundled names over ${testCase.name} rules`, async () => {
+      const hooks = await load({
+        agents: scope === "enabled-agent" ? ["build"] : [],
+      })
+      const config: Record<string, any> = {
+        permission: { skill: { ...testCase.rules } },
+        agent: scope === "enabled-agent"
+          ? { build: { permission: { skill: { ...testCase.rules } } } }
+          : {},
+      }
+
+      await hooks.config!(config as never)
+
+      const rules = scope === "global"
+        ? config.permission.skill
+        : config.agent.build.permission.skill
+      const expectedBrainstorming = scope === "global" ? "deny" : "allow"
+
+      assert.deepEqual(Object.entries(rules), [
+        ...testCase.retained,
+        ["brainstorming", expectedBrainstorming],
+        ["using-superpowers", "deny"],
+      ])
+      assert.equal(resolveSkillPermission(rules, "brainstorming"), expectedBrainstorming)
+      assert.equal(resolveSkillPermission(rules, "using-superpowers"), "deny")
+
+      for (const name of ["alpha", "omega", "brainwave"]) {
+        assert.equal(
+          resolveSkillPermission(rules, name),
+          resolveSkillPermission(testCase.rules, name),
+        )
+      }
+    })
+  }
 }
 
 for (const permissionShape of permissionShapes) {
