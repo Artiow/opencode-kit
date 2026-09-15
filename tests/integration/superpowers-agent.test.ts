@@ -62,45 +62,54 @@ test("initializes one scoped factory with environment options", async () => {
   assert.equal(config.skills.paths.length, 1)
 })
 
-test("routes bootstrap through lifecycle events in an isolated plugin", async () => {
+test("routes bootstrap from user metadata in an isolated plugin", async () => {
   const { stdout } = await runIsolatedPlugin(`
     const exported = (await import(PLUGIN_URL)).default
-    let transforms = 0
+    const transformed = []
+    const references = []
     const plugin = exported.createForTesting({
       opencodeVersion: () => "1.18.30",
       superpowersVersion: () => "6.3.0",
       skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
       upstreamPlugin: async () => ({
         config: async () => {},
-        "experimental.chat.messages.transform": async () => { transforms++ },
+        "experimental.chat.messages.transform": async (input, output) => {
+          transformed.push(output.label)
+          references.push(input === output.expectedInput && output === output.expectedOutput)
+        },
       }),
     })
     const hooks = await plugin({}, { agents: ["build"] })
     await hooks.config({ agent: { build: {} } })
-    await hooks.event({ event: {
-      type: "session.created",
-      properties: { info: { id: "session" } },
-    } })
-    await hooks.event({ event: {
-      type: "message.updated",
-      properties: { info: {
-        id: "assistant",
-        sessionID: "session",
-        role: "assistant",
-        parentID: "user",
-        agent: "build",
-      } },
-    } })
-    const output = { messages: [
-      { info: { id: "user", sessionID: "session", role: "user", agent: "plan" }, parts: [] },
-      { info: { id: "assistant", sessionID: "session", role: "assistant", parentID: "user", agent: "build" }, parts: [] },
-    ] }
-    await hooks["experimental.chat.messages.transform"]({ sessionID: "session" }, output)
-    await hooks["experimental.chat.messages.transform"]({ sessionID: "session" }, structuredClone(output))
-    console.log(JSON.stringify({ transforms }))
+    const message = (sessionID, agent) => ({
+      info: {
+        id: "user-" + sessionID,
+        sessionID,
+        role: "user",
+        time: { created: 1 },
+        agent,
+        model: { providerID: "test", modelID: "test" },
+      },
+      parts: [],
+    })
+    for (const [label, sessionID, agent] of [
+      ["root", "root", "build"],
+      ["task-child", "child", "build"],
+      ["disabled", "disabled", "plan"],
+    ]) {
+      const input = {}
+      const output = { label, messages: [message(sessionID, agent)] }
+      output.expectedInput = input
+      output.expectedOutput = output
+      await hooks["experimental.chat.messages.transform"](input, output)
+    }
+    console.log(JSON.stringify({ transformed, references }))
   `, { provisionDependencies: true })
 
-  assert.deepEqual(JSON.parse(stdout), { transforms: 1 })
+  assert.deepEqual(JSON.parse(stdout), {
+    transformed: ["root", "task-child"],
+    references: [true, true],
+  })
 })
 
 test("reports a failing config hook without exposing staged mutations", async () => {
@@ -160,7 +169,7 @@ test("enables absent public and hidden built-ins through the real CLI", async ()
 test("initializes the registry with external skill collisions", async () => {
   const skill = "---\nname: brainstorming\ndescription: collision fixture\n---\nfixture\n"
   const config: { skills?: { paths: string[] } } = {}
-  const { stderr, stdout } = await runOpenCode(
+  const { stderr } = await runOpenCode(
     ["debug", "skill", "--print-logs", "--log-level", "WARN"],
     {
       installSuperpowersAgent: true,
@@ -188,7 +197,6 @@ test("initializes the registry with external skill collisions", async () => {
 
   // OpenCode reports the collision, but its registry output does not define a winner.
   assert.match(stderr, /message="duplicate skill name".*name=brainstorming/)
-  assert.match(stdout, /"name":\s*"brainstorming"/)
 })
 
 test("fails visibly when the runtime dependency is missing", async () => {

@@ -30,8 +30,6 @@ async function load(
     dir?: string
     upstream?: Upstream | unknown
     agents?: string[]
-    session?: { data?: { parentID?: string } | null; error?: unknown } | Error
-      | ((parameters: unknown) => unknown)
   } = {},
 ): Promise<Hooks> {
   const fixture = overrides.dir ? undefined : skillsFixture()
@@ -46,25 +44,34 @@ async function load(
   })
 
   try {
-    return await plugin({
-      client: {
-        session: {
-          get: async (parameters: unknown) => {
-            if (overrides.session instanceof Error) throw overrides.session
-            if (typeof overrides.session === "function") return overrides.session(parameters)
-            return overrides.session ?? { data: {} }
-          },
-        },
-      },
-    } as never, { agents: overrides.agents ?? [] })
+    return await plugin({} as never, { agents: overrides.agents ?? [] })
   } finally {
     fixture?.cleanup()
   }
 }
 
+function userMessage(
+  sessionID: string,
+  agent: string,
+  id = "user",
+  created = 1,
+) {
+  return {
+    info: {
+      id,
+      sessionID,
+      role: "user",
+      time: { created },
+      agent,
+      model: { providerID: "test", modelID: "test" },
+    },
+    parts: [],
+  }
+}
+
 function messages(sessionID: string, agent: string, userID = "user", assistantID = "assistant") {
   return [
-    { info: { id: userID, sessionID, role: "user", agent }, parts: [] },
+    userMessage(sessionID, agent, userID),
     {
       info: {
         id: assistantID,
@@ -78,34 +85,9 @@ function messages(sessionID: string, agent: string, userID = "user", assistantID
   ] as never
 }
 
-async function assistantUpdated(
-  hooks: Hooks,
-  sessionID: string,
-  agent: string,
-  parentID = "user",
-  messageID = "assistant",
-) {
-  await hooks.event!({
-    event: {
-      type: "message.updated",
-      properties: {
-        sessionID,
-        info: {
-          id: messageID,
-          sessionID,
-          role: "assistant",
-          parentID,
-          agent,
-        },
-      },
-    } as never,
-  })
-}
-
 async function transform(hooks: Hooks, sessionID: string, agent: string) {
-  await assistantUpdated(hooks, sessionID, agent)
   await hooks["experimental.chat.messages.transform"]!(
-    { sessionID } as never,
+    {},
     { messages: messages(sessionID, agent) },
   )
 }
@@ -214,8 +196,7 @@ test("delegates both required upstream hooks", async () => {
 
   await hooks.config!(config)
   const transform = hooks["experimental.chat.messages.transform"]!
-  await assistantUpdated(hooks, "direct", "superpowers")
-  await transform({ sessionID: "direct" } as never, {
+  await transform({}, {
     messages: messages("direct", "superpowers"),
   } as never)
 
@@ -414,7 +395,8 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   const config: Record<string, any> = { agent: { superpowers } }
 
   await hooks.config!(config as never)
-  await transform(hooks, "direct", "superpowers")
+  await transform(hooks, "root", "superpowers")
+  await transform(hooks, "task-child", "superpowers")
 
   assert.strictEqual(config.agent.superpowers, superpowers)
   assert.deepEqual(superpowers, {
@@ -493,11 +475,10 @@ for (const [name, mode] of [["primary", "primary"], ["subagent", "subagent"]] as
   })
 }
 
-test("does not bootstrap a dispatched session using the same enabled agent", async () => {
+test("routes enabled root and task-child-shaped histories identically", async () => {
   let calls = 0
   const hooks = await load({
     agents: ["build"],
-    session: { data: { parentID: "parent" } },
     upstream: {
       config: async () => {},
       "experimental.chat.messages.transform": async () => { calls++ },
@@ -505,19 +486,16 @@ test("does not bootstrap a dispatched session using the same enabled agent", asy
   })
   const config: Record<string, any> = { agent: { build: {} } }
   await hooks.config!(config as never)
+  await transform(hooks, "root", "build")
   await transform(hooks, "child", "build")
   assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
-  assert.equal(calls, 0)
+  assert.equal(calls, 2)
 })
 
-for (const [name, session, expected] of [
-  ["direct", { data: {} }, 1],
-  ["dispatched", { data: { parentID: "parent" } }, 0],
-] as const) {
-  test(`${name} generated superpowers agent bootstrap`, async () => {
+for (const name of ["root", "task-child"] as const) {
+  test(`generated superpowers agent bootstraps a ${name}-shaped history`, async () => {
     let calls = 0
     const hooks = await load({
-      session,
       upstream: {
         config: async () => {},
         "experimental.chat.messages.transform": async () => { calls++ },
@@ -525,11 +503,11 @@ for (const [name, session, expected] of [
     })
     await hooks.config!({} as never)
     await transform(hooks, name, "superpowers")
-    assert.equal(calls, expected)
+    assert.equal(calls, 1)
   })
 }
 
-test("never bootstraps internal agents despite allowlisting", async () => {
+test("routes explicitly enabled internal agent names without special cases", async () => {
   let calls = 0
   const hooks = await load({
     agents: ["compaction", "title", "summary"],
@@ -542,10 +520,10 @@ test("never bootstraps internal agents despite allowlisting", async () => {
   for (const agent of ["compaction", "title", "summary"]) {
     await transform(hooks, "direct", agent)
   }
-  assert.equal(calls, 0)
+  assert.equal(calls, 3)
 })
 
-test("routes from assistant events across cloned, reordered, and reused histories exactly once", async () => {
+test("does not route non-enabled or missing-user histories", async () => {
   let calls = 0
   const hooks = await load({
     agents: ["build"],
@@ -555,134 +533,42 @@ test("routes from assistant events across cloned, reordered, and reused historie
     },
   })
   await hooks.config!({ agent: { build: {} } } as never)
-  await assistantUpdated(hooks, "session", "build")
-  const history = messages("session", "build") as any[]
   const transformHook = hooks["experimental.chat.messages.transform"]!
 
-  await transformHook({ sessionID: "session" } as never, { messages: history } as never)
-  history.reverse()
-  await transformHook({ sessionID: "session" } as never, { messages: history } as never)
-  await transformHook(
-    { sessionID: "session" } as never,
-    { messages: structuredClone(history) } as never,
-  )
+  await transformHook({}, { messages: messages("session", "plan") })
+  await transformHook({}, { messages: [] })
+  await transformHook({}, { messages: [messages("session", "build")[1]] } as never)
 
-  assert.equal(calls, 1)
+  assert.equal(calls, 0)
 })
 
-test("replaces assistant routing for tool loops and agent switches both ways", async () => {
+test("agent switching follows the chronologically latest user message", async () => {
   const routed: string[] = []
   const hooks = await load({
     agents: ["build"],
     upstream: {
       config: async () => {},
       "experimental.chat.messages.transform": async (_input: unknown, output: any) => {
-        routed.push(output.messages.find((message: any) => message.info.role === "assistant").info.id)
+        routed.push(output.messages.map((message: any) => message.info.id).join(","))
       },
     },
   })
   await hooks.config!({ agent: { build: {} } } as never)
+  const transformHook = hooks["experimental.chat.messages.transform"]!
 
-  await assistantUpdated(hooks, "session", "build", "user", "assistant-1")
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "session" } as never,
-    { messages: messages("session", "build", "user", "assistant-1") },
-  )
-  await assistantUpdated(hooks, "session", "plan", "user", "assistant-2")
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "session" } as never,
-    { messages: messages("session", "plan", "user", "assistant-2") },
-  )
-  await assistantUpdated(hooks, "session", "build", "user", "assistant-3")
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "session" } as never,
-    { messages: messages("session", "build", "user", "assistant-3") },
-  )
+  await transformHook({}, { messages: [
+    userMessage("session", "build", "first", 1),
+    userMessage("session", "plan", "second", 2),
+  ] } as never)
+  await transformHook({}, { messages: [
+    userMessage("session", "plan", "first", 1),
+    userMessage("session", "build", "second", 2),
+  ] } as never)
 
-  assert.deepEqual(routed, ["assistant-1", "assistant-3"])
+  assert.deepEqual(routed, ["first,second"])
 })
 
-test("isolates concurrent direct and child sessions and clears deleted state", async () => {
-  let calls = 0
-  const lookups: unknown[] = []
-  const hooks = await load({
-    agents: ["build"],
-    session: (parameters) => {
-      lookups.push(parameters)
-      return { data: {} }
-    },
-    upstream: {
-      config: async () => {},
-      "experimental.chat.messages.transform": async () => { calls++ },
-    },
-  })
-  await hooks.config!({ agent: { build: {} } } as never)
-  await hooks.event!({ event: {
-    type: "session.created",
-    properties: { info: { id: "direct", parentID: undefined } },
-  } as never })
-  await hooks.event!({ event: {
-    type: "session.created",
-    properties: { info: { id: "child", parentID: "direct" } },
-  } as never })
-
-  await transform(hooks, "child", "build")
-  await transform(hooks, "direct", "build")
-  await hooks.event!({ event: {
-    type: "session.deleted",
-    properties: { info: { id: "direct" } },
-  } as never })
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "direct" } as never,
-    { messages: messages("direct", "build") },
-  )
-
-  assert.equal(calls, 1)
-  assert.deepEqual(lookups, [])
-})
-
-test("uses the installed session lookup signature on a cache miss", async () => {
-  const lookups: unknown[] = []
-  const hooks = await load({
-    agents: ["build"],
-    session: (parameters) => {
-      lookups.push(parameters)
-      return { data: {} }
-    },
-  })
-  await hooks.config!({ agent: { build: {} } } as never)
-  await transform(hooks, "session", "build")
-  assert.deepEqual(lookups, [{ path: { id: "session" } }])
-})
-
-test("skips one compaction transform then allows the autocontinue assistant", async () => {
-  let calls = 0
-  const hooks = await load({
-    agents: ["build"],
-    upstream: {
-      config: async () => {},
-      "experimental.chat.messages.transform": async () => { calls++ },
-    },
-  })
-  await hooks.config!({ agent: { build: {} } } as never)
-  await assistantUpdated(hooks, "session", "build", "old-user", "compaction")
-  await hooks["experimental.session.compacting"]!({ sessionID: "session" }, {
-    context: [],
-  })
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "session" } as never,
-    { messages: messages("session", "build", "old-user", "compaction") },
-  )
-  await assistantUpdated(hooks, "session", "build", "continue", "autocontinue")
-  await hooks["experimental.chat.messages.transform"]!(
-    { sessionID: "session" } as never,
-    { messages: messages("session", "build", "continue", "autocontinue") },
-  )
-
-  assert.equal(calls, 1)
-})
-
-test("fails closed for stale parents, mixed sessions, and mismatched assistant history", async () => {
+test("orders user messages by timestamp and ID regardless of array order", async () => {
   let calls = 0
   const hooks = await load({
     agents: ["build"],
@@ -694,45 +580,64 @@ test("fails closed for stale parents, mixed sessions, and mismatched assistant h
   await hooks.config!({ agent: { build: {} } } as never)
   const transformHook = hooks["experimental.chat.messages.transform"]!
 
-  await assistantUpdated(hooks, "session", "build", "stale")
-  await transformHook({ sessionID: "session" } as never, {
-    messages: messages("session", "build"),
-  })
-  await assistantUpdated(hooks, "session", "build")
-  const mixed = messages("session", "build") as any[]
-  mixed[0].info.sessionID = "other"
-  await transformHook({ sessionID: "session" } as never, { messages: mixed } as never)
-  const mismatch = messages("session", "plan")
-  await transformHook({ sessionID: "session" } as never, { messages: mismatch })
+  await transformHook({}, { messages: [
+    userMessage("session", "build", "older", 10),
+    userMessage("session", "plan", "newer", 20),
+  ].reverse() } as never)
+  await transformHook({}, { messages: [
+    userMessage("session", "build", "z", 30),
+    userMessage("session", "plan", "a", 30),
+  ] } as never)
+  await transformHook({}, { messages: [
+    userMessage("session", "plan", "z", 40),
+    userMessage("session", "build", "a", 40),
+  ].reverse() } as never)
 
-  assert.equal(calls, 0)
+  assert.equal(calls, 1)
 })
 
-for (const [name, session, sessionID] of [
-  ["missing session id", { data: {} }, undefined],
-  ["missing session data", { data: null }, "unknown"],
-  ["session lookup error", { error: "missing" }, "unknown"],
-  ["session lookup rejection", new Error("missing"), "unknown"],
-] as const) {
-  test(`fails closed for ${name}`, async () => {
-    let calls = 0
-    const hooks = await load({
-      agents: ["build"],
-      session,
-      upstream: {
-        config: async () => {},
-        "experimental.chat.messages.transform": async () => { calls++ },
-      },
-    })
-    await hooks.config!({ agent: { build: {} } } as never)
-    if (sessionID) await transform(hooks, sessionID, "build")
-    else await hooks["experimental.chat.messages.transform"]!(
-      {} as never,
-      { messages: messages("unknown", "build") },
-    )
-    assert.equal(calls, 0)
+test("delegates every repeated eligible transform", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
   })
-}
+  await hooks.config!({ agent: { build: {} } } as never)
+  const transformHook = hooks["experimental.chat.messages.transform"]!
+  const output = { messages: messages("session", "build") }
+
+  await transformHook({}, output)
+  await transformHook({}, output)
+  await transformHook({}, structuredClone(output))
+
+  assert.equal(calls, 3)
+})
+
+test("forwards the exact input and output references upstream", async () => {
+  let receivedInput: unknown
+  let receivedOutput: unknown
+  const hooks = await load({
+    agents: ["build"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async (input: unknown, output: unknown) => {
+        receivedInput = input
+        receivedOutput = output
+      },
+    },
+  })
+  await hooks.config!({ agent: { build: {} } } as never)
+  const input = {}
+  const output = { messages: messages("session", "build") }
+
+  await hooks["experimental.chat.messages.transform"]!(input, output)
+
+  assert.strictEqual(receivedInput, input)
+  assert.strictEqual(receivedOutput, output)
+})
 
 test("reports every invalid agent in deterministic order", async () => {
   const hooks = await load({
@@ -882,6 +787,50 @@ for (const scope of ["global", "enabled-agent"] as const) {
     })
   }
 }
+
+test("appends owned skill decisions after conflicting global and agent rules", async () => {
+  const hooks = await load({ agents: ["build"] })
+  const config: Record<string, any> = {
+    permission: {
+      skill: {
+        brainstorming: "allow",
+        "*": "allow",
+        "brain*": "ask",
+        "using-superpowers": "allow",
+      },
+    },
+    agent: {
+      build: {
+        permission: {
+          skill: {
+            brainstorming: "deny",
+            "*": "deny",
+            "brain*": "ask",
+            "using-superpowers": "allow",
+          },
+        },
+      },
+    },
+  }
+
+  await hooks.config!(config as never)
+
+  assert.deepEqual(Object.entries(config.permission.skill), [
+    ["*", "allow"],
+    ["brain*", "ask"],
+    ["brainstorming", "deny"],
+    ["using-superpowers", "deny"],
+  ])
+  assert.deepEqual(Object.entries(config.agent.build.permission.skill), [
+    ["*", "deny"],
+    ["brain*", "ask"],
+    ["brainstorming", "allow"],
+    ["using-superpowers", "deny"],
+  ])
+  assert.equal(resolveSkillPermission(config.permission.skill, "brainstorming"), "deny")
+  assert.equal(resolveSkillPermission(config.agent.build.permission.skill, "brainstorming"), "allow")
+  assert.equal(resolveSkillPermission(config.agent.build.permission.skill, "using-superpowers"), "deny")
+})
 
 for (const permissionShape of permissionShapes) {
   for (const skillShape of skillShapes) {

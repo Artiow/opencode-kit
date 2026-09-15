@@ -46,9 +46,9 @@ Built-in and configured custom agents may be allowlisted. Unknown and explicitly
 
 OpenCode permissions identify a skill by frontmatter `name`, not source path. A project or personal skill with the same name as a bundled Superpowers skill therefore shares the generated rule, and OpenCode only reports an ambiguous duplicate. Rename the external skill's frontmatter name (and directory), or remove its discovery path; discovery order is not a safe remediation. Duplicate names inside the bundled package, missing/malformed skills, or a missing `using-superpowers` policy fail initialization.
 
-Bootstrap injection applies to a directly selected enabled primary agent or directly selected enabled subagent. It does not apply to sessions created through `task`, even when the dispatched agent is allowlisted, and never applies to OpenCode's internal `compaction`, `title`, or `summary` agents. Skill permissions and bootstrap routing are separate here: an allowlisted task-dispatched agent retains its capability permissions but receives the upstream subagent semantics instead of the direct-session bootstrap.
+Bootstrap routing follows the agent on the chronologically latest user message, using the message ID as a deterministic tie-breaker when timestamps match. Every transform invocation for an enabled agent delegates to the unchanged upstream bootstrap, whether the agent is primary, a directly selected subagent, task-dispatched, or an explicitly allowlisted internal agent name. The upstream `<SUBAGENT-STOP>` block remains present and controls any model-facing behavior for dispatched subagents.
 
-Routing fails closed when session identity, parentage, assistant metadata, or session lookup is missing or inconsistent. It also skips compaction transforms, prevents repeated injection for reused histories, and isolates session/agent switches. The config hook stages upstream and wrapper changes and commits them atomically; invalid configuration or an upstream failure exposes none of the staged config mutations. OpenCode may continue after reporting a plugin failure, so treat any `[superpowers-agent]` startup error as a disabled integration and fix it before use.
+Histories without a user message, or whose latest user-message agent is not enabled, do not delegate. Upstream retains ownership of bootstrap content, caching, and duplicate protection. The config hook stages upstream and wrapper changes and commits them atomically; invalid configuration or an upstream failure exposes none of the staged config mutations. OpenCode may continue after reporting a plugin failure, so treat any `[superpowers-agent]` startup error as a disabled integration and fix it before use.
 
 After setup or changes, quit and restart OpenCode; plugins, configuration, and environment options are loaded only at startup. Validate registration and representative agents with:
 
@@ -59,7 +59,7 @@ opencode debug agent build
 opencode debug skill --print-logs --log-level WARN
 ```
 
-`debug config` should list one plugin ending in `/plugins/superpowers-agent.ts`. `debug agent` validates built-in or custom agent registration; `debug skill` surfaces duplicate skill names.
+`debug config` should list one plugin ending in `/plugins/superpowers-agent.ts`. `debug agent` validates built-in or custom agent registration; `debug skill` surfaces duplicate skill names. These commands are registration and diagnostic checks, not evidence that bootstrap hooks ran. Bootstrap routing is covered by hook-level unit and isolated integration tests, not provider-backed end-to-end tests.
 
 ## Configuration layers
 
