@@ -58,9 +58,6 @@ import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
 /**
  * Встроенный Node.js filesystem API.
  *
- * `existsSync(path)`
- *   синхронно проверяет существование файла/директории.
- *
  * `readFileSync(path, "utf8")`
  *   синхронно читает текстовый файл и возвращает string.
  *
@@ -73,7 +70,6 @@ import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
  * значительно проще.
  */
 import {
-  existsSync,
   readFileSync,
   readdirSync,
 } from "node:fs"
@@ -122,9 +118,6 @@ const BUILT_IN_AGENTS = new Set([
  * `skill` tool.
  */
 const POLICY_SKILL = "using-superpowers"
-
-const EXPECTED_OPENCODE_VERSION = ">=1.18.30 <1.19.0"
-const EXPECTED_SUPERPOWERS_VERSION = "6.3.0"
 
 /**
  * String literal union в TypeScript — ближайший аналог enum с ровно тремя
@@ -267,63 +260,6 @@ function skillsDir(): string {
   return join(dirname(packageJson), "skills")
 }
 
-function packageVersion(packageName: string): string {
-  try {
-    let directory: string
-    try {
-      directory = dirname(fileURLToPath(
-        import.meta.resolve(`${packageName}/package.json`),
-      ))
-    } catch {
-      directory = dirname(fileURLToPath(import.meta.resolve(packageName)))
-      while (!existsSync(join(directory, "package.json"))) {
-        const parent = dirname(directory)
-        if (parent === directory) return "<unresolved>"
-        directory = parent
-      }
-    }
-
-    const packageJson = join(directory, "package.json")
-    const manifest = JSON.parse(readFileSync(packageJson, "utf8")) as {
-      version?: unknown
-    }
-
-    return typeof manifest.version === "string"
-      ? manifest.version
-      : "<malformed>"
-  } catch {
-    return "<unresolved>"
-  }
-}
-
-function parseVersion(version: string): [number, number, number] | undefined {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)
-  return match
-    ? [Number(match[1]), Number(match[2]), Number(match[3])]
-    : undefined
-}
-
-function validateVersions(opencode: string, superpowers: string): void {
-  const parsedOpenCode = parseVersion(opencode)
-  const openCodeSupported = parsedOpenCode
-    && parsedOpenCode[0] === 1
-    && parsedOpenCode[1] === 18
-    && parsedOpenCode[2] >= 30
-
-  if (!openCodeSupported) {
-    throw new Error(
-      `[superpowers-agent] expected @opencode-ai/plugin ${EXPECTED_OPENCODE_VERSION}, actual ${opencode}`,
-    )
-  }
-
-  if (superpowers !== EXPECTED_SUPERPOWERS_VERSION) {
-    throw new Error(
-      `[superpowers-agent] expected superpowers ${EXPECTED_SUPERPOWERS_VERSION}, actual ${superpowers}`,
-    )
-  }
-}
-
-
 /**
  * Читает `name` из YAML frontmatter файла SKILL.md.
  *
@@ -393,15 +329,11 @@ function discoverSkills(dir: string): DiscoveredSkill[] {
 }
 
 type Dependencies = {
-  opencodeVersion: () => string
-  superpowersVersion: () => string
   skillsDir: () => string
   upstreamPlugin: typeof UpstreamSuperpowersPlugin
 }
 
 const dependencies: Dependencies = {
-  opencodeVersion: () => packageVersion("@opencode-ai/plugin"),
-  superpowersVersion: () => packageVersion("superpowers"),
   skillsDir,
   upstreamPlugin: UpstreamSuperpowersPlugin,
 }
@@ -734,8 +666,6 @@ function createSuperpowersAgentPlugin(
 
   return async (input, rawOptions) => {
   const options = parseOptions(rawOptions)
-
-  validateVersions(deps.opencodeVersion(), deps.superpowersVersion())
 
   /**
    * Инициализируем upstream plugin как библиотеку.

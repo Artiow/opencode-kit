@@ -6,7 +6,7 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 
 - [GNU Stow](https://www.gnu.org/software/stow/) is required to deploy the global resources.
 - Configure [`nickclyde/duckduckgo-mcp-server`](https://github.com/nickclyde/duckduckgo-mcp-server) globally as `duckduckgo`; project agents depend on it. This repository only enables the server and does not configure its installation or launch.
-- The scoped Superpowers integration supports OpenCode/plugin `>=1.18.30 <1.19.0` and exactly Superpowers `6.3.0`; the tested OpenCode version is `1.18.31`.
+- The scoped Superpowers integration is tested with OpenCode/plugin `1.18.31` and Superpowers `6.3.0`. Compatibility is validated from the required runtime hooks and skill assets rather than package version numbers.
 
 ## Scoped Superpowers
 
@@ -19,7 +19,7 @@ npm install --prefix "$HOME/.config/opencode" --save-exact \
   "superpowers@github:obra/superpowers#v6.3.0"
 ```
 
-A missing dependency or version other than `6.3.0` fails plugin initialization visibly.
+The pinned release above matches this repository's tested environment. Other releases are accepted when they provide the required plugin hooks and valid skill assets. A missing or structurally incompatible dependency fails plugin initialization visibly.
 
 The generated `superpowers` primary agent is enabled by default. To additionally enable existing agents, set a JSON array in the environment before starting OpenCode:
 

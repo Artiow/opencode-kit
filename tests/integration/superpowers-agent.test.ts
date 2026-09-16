@@ -68,8 +68,6 @@ test("routes bootstrap from user metadata in an isolated plugin", async () => {
     const transformed = []
     const references = []
     const plugin = exported.createForTesting({
-      opencodeVersion: () => "1.18.30",
-      superpowersVersion: () => "6.3.0",
       skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
       upstreamPlugin: async () => ({
         config: async () => {},
@@ -116,8 +114,6 @@ test("reports a failing config hook without exposing staged mutations", async ()
   await assert.rejects(runIsolatedPlugin(`
     const exported = (await import(PLUGIN_URL)).default
     const plugin = exported.createForTesting({
-      opencodeVersion: () => "1.18.30",
-      superpowersVersion: () => "6.3.0",
       skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
       upstreamPlugin: async () => ({
         config: async (config) => {

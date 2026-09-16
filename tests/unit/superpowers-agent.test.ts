@@ -25,8 +25,6 @@ function skillsFixture(skills: Array<[string, string]> = [
 
 async function load(
   overrides: {
-    opencodeVersion?: string
-    superpowersVersion?: string
     dir?: string
     upstream?: Upstream | unknown
     agents?: string[]
@@ -34,8 +32,6 @@ async function load(
 ): Promise<Hooks> {
   const fixture = overrides.dir ? undefined : skillsFixture()
   const plugin = createSuperpowersAgentPlugin({
-    opencodeVersion: () => overrides.opencodeVersion ?? "1.18.30",
-    superpowersVersion: () => overrides.superpowersVersion ?? "6.3.0",
     skillsDir: () => overrides.dir ?? fixture!.dir,
     upstreamPlugin: (async () => overrides.upstream ?? {
       config: async () => {},
@@ -90,28 +86,6 @@ async function transform(hooks: Hooks, sessionID: string, agent: string) {
     {},
     { messages: messages(sessionID, agent) },
   )
-}
-
-for (const version of ["1.18.30", "1.18.999"]) {
-  test(`accepts supported OpenCode boundary ${version}`, async () => {
-    assert.equal(typeof (await load({ opencodeVersion: version })).config, "function")
-  })
-}
-
-for (const version of ["1.18.29", "1.19.0", "2.0.0", "1.18", "v1.18.30", "1.18.30-beta.1"]) {
-  test(`rejects unsupported or malformed OpenCode version ${version}`, async () => {
-    await assert.rejects(load({ opencodeVersion: version }), {
-      message: `[superpowers-agent] expected @opencode-ai/plugin >=1.18.30 <1.19.0, actual ${version}`,
-    })
-  })
-}
-
-for (const version of ["6.3.1", "6.3", "v6.3.0"]) {
-  test(`rejects unsupported or malformed Superpowers version ${version}`, async () => {
-    await assert.rejects(load({ superpowersVersion: version }), {
-      message: `[superpowers-agent] expected superpowers 6.3.0, actual ${version}`,
-    })
-  })
 }
 
 test("rejects missing or unreadable skill assets", async () => {
