@@ -23,18 +23,19 @@ The pinned release above matches this repository's tested environment. Other rel
 
 The generated `superpowers` primary agent is enabled by default. To additionally enable existing agents, set a JSON array in the environment before starting OpenCode:
 
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": { "build": {} }
+}
+```
+
 ```sh
 OPENCODE_SUPERPOWERS_AGENTS='["build","reviewer"]'
 export OPENCODE_SUPERPOWERS_AGENTS
 ```
 
-Whitespace is trimmed, duplicate names are removed, and `superpowers` is implicit. The value must be valid JSON containing only non-empty strings. Unknown or disabled names fail the config hook with a sorted diagnostic such as:
-
-```text
-[superpowers-agent] invalid configured agents:
-  "buidl" does not exist
-  "reviewer" is disabled
-```
+Whitespace is trimmed, duplicate names are removed, and `superpowers` is implicit. The value must be valid JSON containing only non-empty strings. Only agents already present in the merged `agent` config are enabled; missing or explicitly disabled names are ignored. To enable a built-in, add an override for it to `agent` because OpenCode materializes built-ins after plugin config hooks.
 
 Malformed JSON reports `invalid OPENCODE_SUPERPOWERS_AGENTS`; a non-array, non-string item, or blank item reports `"agents" must be an array of non-empty strings`.
 
@@ -42,7 +43,7 @@ Malformed JSON reports `invalid OPENCODE_SUPERPOWERS_AGENTS`; a non-array, non-s
 
 The wrapper discovers the bundled Superpowers `SKILL.md` files and owns the exact `permission.skill` rules for their names. It appends those exact rules after existing rules because OpenCode uses the last matching permission: global rules deny the skills by default, every configured non-disabled agent outside the allowlist receives matching agent-level denies, and allowlisted agents plus the non-disabled `superpowers` agent receive allows for capability skills. `using-superpowers` remains denied through the native `skill` tool because the upstream transform supplies that policy when bootstrap delegation occurs. Existing wildcard and unrelated rules retain their order and behavior; conflicting exact bundled-name rules are replaced by the wrapper.
 
-Built-in and configured custom agents may be allowlisted. Unknown and explicitly disabled agents are rejected. An existing `agent.superpowers` is augmented rather than replaced: its model, prompt, mode, description, permissions, and other settings are retained, missing `mode` and `description` default to `primary` and `OpenCode with the full Superpowers workflow`, and its skill rules are generated as above. With no explicit model it inherits normal OpenCode model configuration. Set `agent.superpowers.disable: true` to keep that entry untouched and suppress its bootstrap.
+Configured built-in and custom agents may be allowlisted. Missing and explicitly disabled agents are ignored. An existing `agent.superpowers` is augmented rather than replaced: its model, prompt, mode, description, permissions, and other settings are retained, missing `mode` and `description` default to `primary` and `OpenCode with the full Superpowers workflow`, and its skill rules are generated as above. With no explicit model it inherits normal OpenCode model configuration. Set `agent.superpowers.disable: true` to keep that entry untouched and suppress its bootstrap.
 
 OpenCode permissions identify a skill by frontmatter `name`, not source path. A project or personal skill with the same name as a bundled Superpowers skill therefore shares the generated rule, and OpenCode only reports an ambiguous duplicate. Rename the external skill's frontmatter name (and directory), or remove its discovery path; discovery order is not a safe remediation. Duplicate names inside the bundled package, missing/malformed skills, or a missing `using-superpowers` policy fail initialization.
 

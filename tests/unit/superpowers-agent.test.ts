@@ -381,25 +381,24 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   assert.equal(transformCalls, 0)
 })
 
-test("enables every absent OpenCode 1.18.31 built-in agent", async () => {
-  const agents = [
-    "build", "plan", "general", "explore", "compaction", "title", "summary",
-  ]
-  const hooks = await load({ agents })
+test("ignores absent agent names", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["build", "buidl"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
+  })
   const config: Record<string, any> = {}
 
   await hooks.config!(config as never)
+  await transform(hooks, "direct", "build")
+  await transform(hooks, "direct", "buidl")
 
-  for (const agent of agents) {
-    assert.deepEqual(config.agent[agent], {
-      permission: {
-        skill: {
-          brainstorming: "allow",
-          "using-superpowers": "deny",
-        },
-      },
-    })
-  }
+  assert.equal(config.agent.build, undefined)
+  assert.equal(config.agent.buidl, undefined)
+  assert.equal(calls, 0)
 })
 
 test("enables a configured custom agent regardless of mode or visibility", async () => {
@@ -413,24 +412,24 @@ test("enables a configured custom agent regardless of mode or visibility", async
   assert.equal(config.agent["internal-reviewer"].permission.skill.brainstorming, "allow")
 })
 
-for (const [name, config] of [
-  ["built-in", { agent: { build: { disable: true } } }],
-  ["custom", { agent: { reviewer: { disable: true } } }],
-] as const) {
-  test(`rejects a disabled ${name} agent`, async () => {
-    const agent = name === "built-in" ? "build" : "reviewer"
-    const hooks = await load({ agents: [agent] })
-    await assert.rejects(hooks.config!(config as never), {
-      message: `[superpowers-agent] invalid configured agents:\n  "${agent}" is disabled`,
-    })
+test("ignores an explicitly disabled agent", async () => {
+  let calls = 0
+  const hooks = await load({
+    agents: ["reviewer"],
+    upstream: {
+      config: async () => {},
+      "experimental.chat.messages.transform": async () => { calls++ },
+    },
   })
-}
+  const reviewer = { disable: true, description: "Disabled by user" }
+  const config = { agent: { reviewer } }
 
-test("rejects an unknown agent", async () => {
-  const hooks = await load({ agents: ["buidl"] })
-  await assert.rejects(hooks.config!({} as never), {
-    message: '[superpowers-agent] invalid configured agents:\n  "buidl" does not exist',
-  })
+  await hooks.config!(config as never)
+  await transform(hooks, "direct", "reviewer")
+
+  assert.strictEqual(config.agent.reviewer, reviewer)
+  assert.deepEqual(reviewer, { disable: true, description: "Disabled by user" })
+  assert.equal(calls, 0)
 })
 
 for (const [name, mode] of [["primary", "primary"], ["subagent", "subagent"]] as const) {
@@ -490,7 +489,9 @@ test("routes explicitly enabled internal agent names without special cases", asy
       "experimental.chat.messages.transform": async () => { calls++ },
     },
   })
-  await hooks.config!({} as never)
+  await hooks.config!({
+    agent: { compaction: {}, title: {}, summary: {} },
+  } as never)
   for (const agent of ["compaction", "title", "summary"]) {
     await transform(hooks, "direct", agent)
   }
@@ -611,28 +612,6 @@ test("forwards the exact input and output references upstream", async () => {
 
   assert.strictEqual(receivedInput, input)
   assert.strictEqual(receivedOutput, output)
-})
-
-test("reports every invalid agent in deterministic order", async () => {
-  const hooks = await load({
-    agents: ["z-unknown", "reviewer", "a-unknown", "build"],
-  })
-  const config = {
-    agent: {
-      build: { disable: true },
-      reviewer: { disable: true },
-    },
-  }
-
-  await assert.rejects(hooks.config!(config as never), {
-    message: [
-      "[superpowers-agent] invalid configured agents:",
-      '  "a-unknown" does not exist',
-      '  "build" is disabled',
-      '  "reviewer" is disabled',
-      '  "z-unknown" does not exist',
-    ].join("\n"),
-  })
 })
 
 type PermissionShape = "missing" | "scalar" | "object"

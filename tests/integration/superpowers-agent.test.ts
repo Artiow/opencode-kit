@@ -146,20 +146,16 @@ test("reports a failing config hook without exposing staged mutations", async ()
   })
 })
 
-test("enables absent public and hidden built-ins through the real CLI", async () => {
-  for (const agent of ["build", "general", "summary"]) {
-    const { stderr, stdout } = await runOpenCode(["debug", "agent", agent], {
-      installSuperpowersAgent: true,
-      provisionDependencies: true,
-      env: { OPENCODE_SUPERPOWERS_AGENTS: '["build","general","summary"]' },
-    })
-    const registered = JSON.parse(stdout)
+test("ignores absent agent names through the real CLI", async () => {
+  const { stderr, stdout } = await runOpenCode(["debug", "config"], {
+    installSuperpowersAgent: true,
+    provisionDependencies: true,
+    env: { OPENCODE_SUPERPOWERS_AGENTS: '["buidl"]' },
+  })
+  const config = JSON.parse(stdout)
 
-    assert.equal(stderr, "")
-    assert.equal(registered.name, agent)
-    assert.equal(registered.native, true)
-    if (agent === "summary") assert.equal(registered.hidden, true)
-  }
+  assert.equal(stderr, "")
+  assert.equal(config.agent.buidl, undefined)
 })
 
 test("initializes the registry with external skill collisions", async () => {

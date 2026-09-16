@@ -14,17 +14,8 @@
  * plugin не владеет: какие агенты получают skills и bootstrap.
  */
 
-import type {
-  Config,
-  Hooks,
-  Plugin,
-  PluginOptions,
-} from "@opencode-ai/plugin"
-import type {
-  AgentConfig,
-  PermissionActionConfig,
-  PermissionConfig,
-} from "@opencode-ai/sdk/v2"
+import type { Config, Hooks, Plugin, PluginOptions } from "@opencode-ai/plugin"
+import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
 
 /**
  * Upstream импортируется как factory, а не регистрируется в OpenCode отдельно:
@@ -39,14 +30,11 @@ import type {
 import { SuperpowersPlugin } from "superpowers"
 
 /**
- * Синхронные операции здесь осознанны: они выполняются при инициализации
+ * Синхронные операции здесь осознаны: они выполняются при инициализации
  * plugin до регистрации hooks. Каталог Superpowers мал, поэтому более сложная
  * async-координация не дала бы практической пользы на runtime request path.
  */
-import {
-  readFileSync,
-  readdirSync,
-} from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 
 /**
  * Module resolver возвращает file: URL. Преобразуем его штатным API, а не
@@ -54,29 +42,11 @@ import {
  */
 import { fileURLToPath } from "node:url"
 
-import {
-  dirname,
-  join,
-} from "node:path"
+import { dirname, join } from "node:path"
 
 
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
-/**
- * OpenCode регистрирует built-ins после plugin config hook, поэтому их
- * отсутствие в `config.agent` не означает typo. Список фиксирует протестированный
- * runtime-контракт и должен сверяться с интеграционным тестом при обновлении
- * OpenCode.
- */
-const BUILT_IN_AGENTS = new Set([
-  "build",
-  "plan",
-  "general",
-  "explore",
-  "compaction",
-  "title",
-  "summary",
-])
 /**
  * Единственное имя upstream skill, которое plugin знает специально.
  *
@@ -93,27 +63,17 @@ type Action = PermissionActionConfig
 
 type SkillPermissions = Record<string, Action>
 
-type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & {
-  permission?: PermissionConfig
-}
+type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & { permission?: PermissionConfig }
 
-type RuntimeConfig = Omit<Config, "permission" | "agent"> & {
-  permission?: PermissionConfig
-  agent?: Record<string, RuntimeAgentConfig>
-}
+type RuntimeConfig = Omit<Config, "permission" | "agent"> & { permission?: PermissionConfig; agent?: Record<string, RuntimeAgentConfig> }
 
 /**
  * Выводим тип messages из официального hook-а, чтобы изменение OpenCode API
  * ломало typecheck, а не оставляло wrapper с незаметно устаревшей копией shape.
  */
-type Messages =
-  Parameters<
-    NonNullable<Hooks["experimental.chat.messages.transform"]>
-  >[1]["messages"]
+type Messages = Parameters<NonNullable<Hooks["experimental.chat.messages.transform"]>>[1]["messages"]
 
-type Options = {
-  agents: string[]
-}
+type Options = { agents: string[] }
 
 const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 
@@ -129,24 +89,17 @@ function parseOptions(raw?: PluginOptions): Options {
   /** Отсутствующие options означают строгий opt-in без дополнительных agents. */
   const agents = raw?.agents ?? []
 
-  if (
-    !Array.isArray(agents) ||
-    agents.some((value) => typeof value !== "string" || !value.trim())
-  ) {
-    throw new Error(
-      '[superpowers-agent] "agents" must be an array of non-empty strings',
-    )
+  if (!Array.isArray(agents) || agents.some((value) => typeof value !== "string" || !value.trim())) {
+    throw new Error('[superpowers-agent] "agents" must be an array of non-empty strings')
   }
 
-  return {
-    /**
-     * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
-     * из allowlist, поскольку его lifecycle должен уважать explicit disable:
-     * entry дополняется (или создаётся), а disabled остаётся выключенной.
-     */
-    agents: [...new Set(agents.map((value) => value.trim()))]
-      .filter((value) => value !== SUPERPOWERS_AGENT),
-  }
+  /**
+   * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
+   * из allowlist, поскольку его lifecycle должен уважать explicit disable:
+   * entry дополняется (или создаётся), а disabled остаётся выключенной.
+   */
+  const uniqueAgents = [...new Set(agents.map((value) => value.trim()))].filter((value) => value !== SUPERPOWERS_AGENT)
+  return { agents: uniqueAgents }
 }
 
 function environmentOptions(value: string | undefined): Options {
@@ -178,8 +131,7 @@ function environmentOptions(value: string | undefined): Options {
  * захардкоженному пути (другая config directory, package layout и т.п.).
  */
 function skillsDir(): string {
-  const packageJson =
-    fileURLToPath(import.meta.resolve("superpowers/package.json"))
+  const packageJson = fileURLToPath(import.meta.resolve("superpowers/package.json"))
 
   return join(dirname(packageJson), "skills")
 }
@@ -199,17 +151,12 @@ function skillName(file: string): string {
   const source = readFileSync(file, "utf8")
 
   /** Не ищем `name` в body, чтобы содержимое skill не выдавало себя за metadata. */
-  const frontmatter = source.match(
-    /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/,
-  )?.[1]
+  const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1]
 
-  const rawName = frontmatter?.match(/^name:[ \t]*([^\r\n]*)$/m)?.[1]
-  const name = rawName?.trim().replace(/^[\"']|[\"']$/g, "").trim()
+  const name = frontmatter?.match(/^name:[ \t]*["']?([^"'\r\n]*?)["']?[ \t]*$/m)?.[1]?.trim()
 
   if (!name) {
-    throw new Error(
-      `[superpowers-agent] skill has no valid name: ${file}`,
-    )
+    throw new Error(`[superpowers-agent] skill has no valid name: ${file}`)
   }
 
   return name
@@ -223,16 +170,12 @@ function skillName(file: string): string {
  * содержит сопровождаемый вручную список имён. После обновления Superpowers
  * новый skill автоматически попадёт в generated permissions.
  */
-type DiscoveredSkill = {
-  name: string
-  path: string
-}
+type DiscoveredSkill = { name: string; path: string }
 
 function discoverSkills(dir: string): DiscoveredSkill[] {
   const skills: DiscoveredSkill[] = []
 
-  for (const entry of readdirSync(dir, { withFileTypes: true })
-    .sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
     const path = join(dir, entry.name)
 
     if (entry.isDirectory()) {
@@ -245,24 +188,13 @@ function discoverSkills(dir: string): DiscoveredSkill[] {
   return skills
 }
 
-type Dependencies = {
-  skillsDir: () => string
-  upstreamPlugin: typeof SuperpowersPlugin
-}
+type Dependencies = { skillsDir: () => string; upstreamPlugin: typeof SuperpowersPlugin }
 
-const dependencies: Dependencies = {
-  skillsDir,
-  upstreamPlugin: SuperpowersPlugin,
-}
+const dependencies: Dependencies = { skillsDir, upstreamPlugin: SuperpowersPlugin }
 
 
-function permissions(
-  skills: string[],
-  action: Action,
-): SkillPermissions {
-  return Object.fromEntries(
-    skills.map((name) => [name, action]),
-  )
+function permissions(skills: string[], action: Action): SkillPermissions {
+  return Object.fromEntries(skills.map((name) => [name, action]))
 }
 
 
@@ -275,19 +207,14 @@ function isAction(value: unknown): value is Action {
  * Приводит scalar shorthand к map, потому что wrapper должен добавить owned
  * skill rules, не потеряв действие пользователя для остальных permissions.
  */
-function normalizePermission(
-  current: unknown,
-  location: string,
-): Exclude<PermissionConfig, PermissionActionConfig> {
+function normalizePermission(current: unknown, location: string): Exclude<PermissionConfig, PermissionActionConfig> {
   if (current === undefined) return {}
   if (isAction(current)) return { "*": current }
   if (current && typeof current === "object" && !Array.isArray(current)) {
     return current as Exclude<PermissionConfig, PermissionActionConfig>
   }
 
-  throw new Error(
-    `[superpowers-agent] ${location} must be a permission action or object`,
-  )
+  throw new Error(`[superpowers-agent] ${location} must be a permission action or object`)
 }
 
 
@@ -317,31 +244,18 @@ function normalizePermission(
  * relative order; их action не ранжируются, потому что OpenCode использует
  * последнее matching rule.
  */
-function mergePermissions(
-  current: unknown,
-  added: SkillPermissions,
-): SkillPermissions {
-  const existing: SkillPermissions = current === undefined
-    ? {}
-    : isAction(current)
-      ? { "*": current }
-      : current && typeof current === "object" && !Array.isArray(current)
-        ? { ...(current as SkillPermissions) }
-        : (() => {
-            throw new Error(
-              "[superpowers-agent] permission.skill must be a permission action or object",
-            )
-          })()
+function mergePermissions(current: unknown, added: SkillPermissions): SkillPermissions {
+  let existing: SkillPermissions
+  if (current === undefined) existing = {}
+  else if (isAction(current)) existing = { "*": current }
+  else if (current && typeof current === "object" && !Array.isArray(current)) existing = { ...(current as SkillPermissions) }
+  else throw new Error("[superpowers-agent] permission.skill must be a permission action or object")
 
   /**
    * Повторно добавляем owned keys в конец: одного присваивания недостаточно,
    * потому что оно меняет value, но сохраняет прежнюю позицию ключа.
    */
-  return Object.fromEntries([
-    ...Object.entries(existing)
-      .filter(([name]) => !(name in added)),
-    ...Object.entries(added),
-  ])
+  return Object.fromEntries([...Object.entries(existing).filter(([name]) => !(name in added)), ...Object.entries(added)])
 }
 
 
@@ -353,13 +267,9 @@ function mergePermissions(
  * дополнительно получают exact agent-level deny, потому что их локальные rules
  * способны перекрыть этот baseline.
  */
-function denyGlobally(
-  config: RuntimeConfig,
-  denied: SkillPermissions,
-): void {
+function denyGlobally(config: RuntimeConfig, denied: SkillPermissions): void {
   config.permission = normalizePermission(config.permission, "permission")
-  config.permission.skill =
-    mergePermissions(config.permission.skill, denied)
+  config.permission.skill = mergePermissions(config.permission.skill, denied)
 }
 
 
@@ -374,25 +284,13 @@ function enableAgent(
   config: RuntimeConfig,
   name: string,
   allowed: SkillPermissions,
-): void {
+): boolean {
   const agent = config.agent?.[name]
+  if (!agent || agent.disable === true) return false
 
-  if (!agent) {
-    /**
-     * Fail-fast выбран специально: typo в `agents` не должен молча создавать
-     * новый пустой agent или оставлять частично работающую конфигурацию.
-     */
-    throw new Error(
-      `[superpowers-agent] configured agent "${name}" does not exist`,
-    )
-  }
-
-  agent.permission = normalizePermission(
-    agent.permission,
-    `agent.${name}.permission`,
-  )
-  agent.permission.skill =
-    mergePermissions(agent.permission.skill, allowed)
+  agent.permission = normalizePermission(agent.permission, `agent.${name}.permission`)
+  agent.permission.skill = mergePermissions(agent.permission.skill, allowed)
+  return true
 }
 
 
@@ -407,33 +305,10 @@ function denyConfiguredAgents(
    * уважать явное отключение и не переписывать dormant configuration.
    */
   for (const [name, agent] of Object.entries(config.agent ?? {})) {
-    if (
-      name === SUPERPOWERS_AGENT
-      || enabledAgents.has(name)
-      || agent.disable === true
-    ) continue
+    if (name === SUPERPOWERS_AGENT || enabledAgents.has(name) || agent.disable === true) continue
 
-    agent.permission = normalizePermission(
-      agent.permission,
-      `agent.${name}.permission`,
-    )
+    agent.permission = normalizePermission(agent.permission, `agent.${name}.permission`)
     agent.permission.skill = mergePermissions(agent.permission.skill, denied)
-  }
-}
-
-
-function validateAgents(config: RuntimeConfig, names: string[]): void {
-  const invalid = names.flatMap((name) => {
-    const configured = config.agent?.[name]
-    if (configured?.disable === true) return [`  "${name}" is disabled`]
-    if (configured || BUILT_IN_AGENTS.has(name)) return []
-    return [`  "${name}" does not exist`]
-  }).sort()
-
-  if (invalid.length) {
-    throw new Error(
-      `[superpowers-agent] invalid configured agents:\n${invalid.join("\n")}`,
-    )
   }
 }
 
@@ -448,17 +323,12 @@ function validateAgents(config: RuntimeConfig, names: string[]): void {
 function configEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true
   if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left) && Array.isArray(right)
-      && left.length === right.length
-      && left.every((value, index) => configEqual(value, right[index]))
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => configEqual(value, right[index]))
   }
   if (left && right && typeof left === "object" && typeof right === "object") {
     const leftEntries = Object.entries(left)
     const rightEntries = Object.entries(right)
-    return leftEntries.length === rightEntries.length
-      && leftEntries.every(([key, value], index) =>
-        key === rightEntries[index]?.[0]
-        && configEqual(value, rightEntries[index]?.[1]))
+    return leftEntries.length === rightEntries.length && leftEntries.every(([key, value], index) => key === rightEntries[index]?.[0] && configEqual(value, rightEntries[index]?.[1]))
   }
   return false
 }
@@ -472,15 +342,8 @@ function reconciledValue(original: unknown, draft: unknown): unknown {
   }
 
   if (draft && typeof draft === "object") {
-    const source = original && typeof original === "object" && !Array.isArray(original)
-      ? original as Record<string, unknown>
-      : {}
-    return Object.fromEntries(
-      Object.entries(draft).map(([key, value]) => [
-        key,
-        reconciledValue(source[key], value),
-      ]),
-    )
+    const source = original && typeof original === "object" && !Array.isArray(original) ? original as Record<string, unknown> : {}
+    return Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, reconciledValue(source[key], value)]))
   }
 
   return draft
@@ -490,9 +353,7 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
   const current = original as Record<string, unknown>
   const staged = draft as Record<string, unknown>
   const removed = Object.keys(current).filter((key) => !(key in staged))
-  const changed = Object.keys(staged)
-    .filter((key) => !configEqual(current[key], staged[key]))
-    .map((key) => [key, reconciledValue(current[key], staged[key])] as const)
+  const changed = Object.keys(staged).filter((key) => !configEqual(current[key], staged[key])).map((key) => [key, reconciledValue(current[key], staged[key])] as const)
 
   for (const key of removed) {
     if (Object.getOwnPropertyDescriptor(current, key)?.configurable === false) {
@@ -524,10 +385,7 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
  * обычный provider/base prompt, а нам нужен стандартный OpenCode prompt плюс
  * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
  */
-function configureSuperpowersAgent(
-  config: RuntimeConfig,
-  allowed: SkillPermissions,
-): boolean {
+function configureSuperpowersAgent(config: RuntimeConfig, allowed: SkillPermissions): boolean {
   config.agent ??= {}
 
   const configured = config.agent[SUPERPOWERS_AGENT]
@@ -556,11 +414,7 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
 
   for (const { info } of messages) {
     if (info.role !== "user") continue
-    if (
-      !latest
-      || info.time.created > latest.time.created
-      || (info.time.created === latest.time.created && info.id > latest.id)
-    ) {
+    if (!latest || info.time.created > latest.time.created || (info.time.created === latest.time.created && info.id > latest.id)) {
       latest = info
     }
   }
@@ -574,176 +428,145 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
  * было тестировать без регистрации второго runtime plugin. Тот же `input`
  * передаётся upstream, иначе он инициализировался бы в отличающемся контексте.
  */
-function createSuperpowersAgentPlugin(
-  overrides: Partial<Dependencies> = {},
-): Plugin {
+function createSuperpowersAgentPlugin(overrides: Partial<Dependencies> = {}): Plugin {
   const deps = { ...dependencies, ...overrides }
 
   return async (input, rawOptions) => {
-  const options = parseOptions(rawOptions)
-
-  /**
-   * Инициализируем upstream plugin как библиотеку.
-   *
-   * Важно: мы НЕ возвращаем его hooks OpenCode напрямую. `upstream` — просто
-   * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
-   * этот wrapper явно его не вызовет.
-   */
-  if (typeof deps.upstreamPlugin !== "function") {
-    throw new Error("[superpowers-agent] upstream plugin is not callable")
-  }
-
-  const upstream = await deps.upstreamPlugin(input)
-
-  if (typeof upstream?.config !== "function") {
-    throw new Error("[superpowers-agent] required upstream config hook is not callable")
-  }
-
-  if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
-    throw new Error(
-      "[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable",
-    )
-  }
-
-  const dir = deps.skillsDir()
-
-  /**
-   * Наш собственный discovery нужен только для permissions. Само содержимое
-   * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
-   */
-  let discoveredSkills: DiscoveredSkill[]
-  try {
-    discoveredSkills = discoverSkills(dir)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`,
-    )
-  }
-  const skillsByName = new Map<string, DiscoveredSkill[]>()
-  for (const skill of discoveredSkills) {
-    const matches = skillsByName.get(skill.name) ?? []
-    matches.push(skill)
-    skillsByName.set(skill.name, matches)
-  }
-  const conflicts = [...skillsByName]
-    .filter(([, skills]) => skills.length > 1)
-    .sort(([left], [right]) => left.localeCompare(right))
-
-  if (!discoveredSkills.length) {
-    throw new Error(
-      `[superpowers-agent] no Superpowers skills found in ${dir}`,
-    )
-  }
-
-  if (conflicts.length) {
-    /** Permissions identify skills only by name, so bundled names must be unique. */
-    const detail = conflicts.map(([name, skills]) => [
-      `duplicate bundled skill name "${name}":`,
-      ...skills.map((skill) => `  ${skill.path}`).sort(),
-    ].join("\n")).join("\n")
-    throw new Error(
-      `[superpowers-agent] ${detail}`,
-    )
-  }
-
-  const uniqueSkills = discoveredSkills.map((skill) => skill.name)
-
-  if (!uniqueSkills.includes(POLICY_SKILL)) {
-    /** Без upstream policy skill невозможно получить полный Superpowers mode. */
-    throw new Error(
-      `[superpowers-agent] required skill "${POLICY_SKILL}" not found`,
-    )
-  }
-
-  const capabilities =
-    uniqueSkills.filter((name) => name !== POLICY_SKILL)
-
-  /**
-   * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
-   * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
-   */
-  const denied =
-    permissions(uniqueSkills, "deny")
-
-  /**
-   * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
-   * deny: policy загружает upstream transform, когда история подходит для
-   * injection; явная повторная загрузка через native `skill` tool не нужна.
-   */
-  const enabled: SkillPermissions = {
-    ...permissions(capabilities, "allow"),
-    [POLICY_SKILL]: "deny",
-  }
-
-  /**
-   * Одно и то же множество используется для access-control и bootstrap scope.
-   * Это исключает состояние "skills разрешены, но bootstrap не включён".
-   */
-  const enabledAgents = new Set<string>()
-
-  const configHook: NonNullable<Hooks["config"]> = async (config) => {
-    const runtimeConfig = config as RuntimeConfig
-    const draft = structuredClone(runtimeConfig)
+    const options = parseOptions(rawOptions)
 
     /**
-     * Проверяем исходную конфигурацию до upstream mutation: agents, побочно
-     * созданные upstream, не считаются пользовательским opt-in. Built-ins
-     * допускаются отдельно, поскольку OpenCode зарегистрирует их позднее.
-     */
-    validateAgents(draft, options.agents)
-
-    /**
-     * Делегируем upstream его собственную регистрацию skills path.
+     * Инициализируем upstream plugin как библиотеку.
      *
-     * Upstream знает собственный package layout и добавляет свой `skills/`
-     * в `config.skills.paths`.
+     * Важно: мы НЕ возвращаем его hooks OpenCode напрямую. `upstream` — просто
+     * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
+     * этот wrapper явно его не вызовет.
      */
-    await upstream.config(draft as Config)
-
-    /**
-     * Накладываем access-control после upstream, чтобы wrapper имел последнее
-     * слово по owned skill permissions независимо от добавленных upstream rules.
-     */
-    denyGlobally(draft, denied)
-
-    const explicitlyEnabled = new Set(options.agents)
-    denyConfiguredAgents(draft, explicitlyEnabled, denied)
-
-    /**
-     * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
-     * global deny только для explicit opt-in, а не расширяли общий baseline.
-     */
-    for (const agent of options.agents) {
-      draft.agent ??= {}
-      draft.agent[agent] ??= {}
-      enableAgent(draft, agent, enabled)
+    if (typeof deps.upstreamPlugin !== "function") {
+      throw new Error("[superpowers-agent] upstream plugin is not callable")
     }
 
-    /**
-     * Не публикуем bootstrap scope до commit: transform не должен делегировать
-     * upstream для конфигурации, которая не смогла установиться.
-     */
-    const nextEnabledAgents = new Set(options.agents)
-    if (configureSuperpowersAgent(draft, enabled)) {
-      nextEnabledAgents.add(SUPERPOWERS_AGENT)
+    const upstream = await deps.upstreamPlugin(input)
+
+    if (typeof upstream?.config !== "function") {
+      throw new Error("[superpowers-agent] required upstream config hook is not callable")
     }
 
-    commitConfig(runtimeConfig, draft)
-    enabledAgents.clear()
-    for (const agent of nextEnabledAgents) enabledAgents.add(agent)
-  }
+    if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
+      throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
+    }
 
-  return {
-    config: configHook,
+    const dir = deps.skillsDir()
 
     /**
-     * Не копируем bootstrap: делегирование upstream сохраняет его policy,
-     * tool mapping и duplicate protection. Wrapper отвечает только за gate по
-     * агенту последнего user turn.
+     * Наш собственный discovery нужен только для permissions. Само содержимое
+     * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
      */
-    "experimental.chat.messages.transform":
-      async (hookInput, output) => {
+    let discoveredSkills: DiscoveredSkill[]
+    try {
+      discoveredSkills = discoverSkills(dir)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`)
+    }
+    const skillsByName = new Map<string, DiscoveredSkill[]>()
+    for (const skill of discoveredSkills) {
+      const matches = skillsByName.get(skill.name) ?? []
+      matches.push(skill)
+      skillsByName.set(skill.name, matches)
+    }
+    const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
+
+    if (!discoveredSkills.length) {
+      throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
+    }
+
+    if (conflicts.length) {
+      /** Permissions identify skills only by name, so bundled names must be unique. */
+      const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
+      throw new Error(`[superpowers-agent] ${detail}`)
+    }
+
+    const uniqueSkills = discoveredSkills.map((skill) => skill.name)
+
+    if (!uniqueSkills.includes(POLICY_SKILL)) {
+      /** Без upstream policy skill невозможно получить полный Superpowers mode. */
+      throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
+    }
+
+    const capabilities = uniqueSkills.filter((name) => name !== POLICY_SKILL)
+
+    /**
+     * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
+     * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
+     */
+    const denied = permissions(uniqueSkills, "deny")
+
+    /**
+     * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
+     * deny: policy загружает upstream transform, когда история подходит для
+     * injection; явная повторная загрузка через native `skill` tool не нужна.
+     */
+    const enabled: SkillPermissions = { ...permissions(capabilities, "allow"), [POLICY_SKILL]: "deny" }
+
+    /**
+     * Одно и то же множество используется для access-control и bootstrap scope.
+     * Это исключает состояние "skills разрешены, но bootstrap не включён".
+     */
+    const enabledAgents = new Set<string>()
+
+    const configHook: NonNullable<Hooks["config"]> = async (config) => {
+      const runtimeConfig = config as RuntimeConfig
+      const draft = structuredClone(runtimeConfig)
+
+      /**
+       * Делегируем upstream его собственную регистрацию skills path.
+       *
+       * Upstream знает собственный package layout и добавляет свой `skills/`
+       * в `config.skills.paths`.
+       */
+      await upstream.config(draft as Config)
+
+      /**
+       * Накладываем access-control после upstream, чтобы wrapper имел последнее
+       * слово по owned skill permissions независимо от добавленных upstream rules.
+       */
+      denyGlobally(draft, denied)
+
+      const explicitlyEnabled = new Set(options.agents)
+      denyConfiguredAgents(draft, explicitlyEnabled, denied)
+
+      const nextEnabledAgents = new Set<string>()
+
+      /**
+       * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
+       * global deny только для существующего explicit opt-in. Отсутствующее имя
+       * игнорируется и не создаёт новый agent из возможной опечатки.
+       */
+      for (const agent of options.agents) {
+        if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
+      }
+      if (configureSuperpowersAgent(draft, enabled)) {
+        nextEnabledAgents.add(SUPERPOWERS_AGENT)
+      }
+
+      /**
+       * Не публикуем bootstrap scope до commit: transform не должен делегировать
+       * upstream для конфигурации, которая не смогла установиться.
+       */
+      commitConfig(runtimeConfig, draft)
+      enabledAgents.clear()
+      for (const agent of nextEnabledAgents) enabledAgents.add(agent)
+    }
+
+    return {
+      config: configHook,
+
+      /**
+       * Не копируем bootstrap: делегирование upstream сохраняет его policy,
+       * tool mapping и duplicate protection. Wrapper отвечает только за gate по
+       * агенту последнего user turn.
+       */
+      "experimental.chat.messages.transform": async (hookInput, output) => {
         const user = latestUser(output.messages)
         if (!user || !enabledAgents.has(user.agent)) return
 
@@ -755,32 +578,22 @@ function createSuperpowersAgentPlugin(
          * - duplicate protection/caching;
          * - фактическую mutation messages.
          */
-        await upstream["experimental.chat.messages.transform"](
-          hookInput,
-          output,
-        )
+        await upstream["experimental.chat.messages.transform"](hookInput, output)
       },
-  }
+    }
   }
 }
 
-type AutoDiscoveredPlugin = Plugin & {
-  createForTesting: typeof createSuperpowersAgentPlugin
-}
+type AutoDiscoveredPlugin = Plugin & { createForTesting: typeof createSuperpowersAgentPlugin }
 
 /**
  * Auto-discovery не передаёт tuple options, поэтому allowlist фиксируется из
  * environment при загрузке модуля. Изменение environment требует restart;
  * `createForTesting` даёт тестам injectable factory без второй регистрации.
  */
-const autoDiscoveredOptions = environmentOptions(
-  process.env[AGENTS_ENV],
-)
+const autoDiscoveredOptions = environmentOptions(process.env[AGENTS_ENV])
 const scopedPlugin = createSuperpowersAgentPlugin()
 
-const SuperpowersAgentPlugin = Object.assign(
-  (async (input) => scopedPlugin(input, autoDiscoveredOptions)) satisfies Plugin,
-  { createForTesting: createSuperpowersAgentPlugin },
-) satisfies AutoDiscoveredPlugin
+const SuperpowersAgentPlugin = Object.assign((async (input) => scopedPlugin(input, autoDiscoveredOptions)) satisfies Plugin, { createForTesting: createSuperpowersAgentPlugin }) satisfies AutoDiscoveredPlugin
 
 export default SuperpowersAgentPlugin
