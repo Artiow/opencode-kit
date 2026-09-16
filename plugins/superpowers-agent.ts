@@ -45,8 +45,8 @@ import type {
  *
  * Здесь же мы сами вызываем `UpstreamSuperpowersPlugin(input)`, получаем
  * объект hook-ов и затем сами решаем, какие из этих hook-ов и когда вызывать.
- * Благодаря этому оригинальный bootstrap можно применять только к выбранным
- * агентам.
+ * Благодаря этому wrapper делегирует оригинальный bootstrap только когда
+ * хронологически последнее user message записано для enabled agent.
  *
  * Upstream package поставляется как JavaScript без подходящих TypeScript
  * declarations для этого export-а. `@ts-ignore` подавляет ошибку TypeScript
@@ -68,8 +68,9 @@ import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
  *   читает содержимое директории и возвращает Dirent-объекты. Dirent позволяет
  *   узнать `isDirectory()` без дополнительного stat-вызова для каждого файла.
  *
- * Синхронные операции здесь осознанны: они выполняются один раз при загрузке
- * plugin, объём каталога Superpowers мал, а код получается значительно проще.
+ * Синхронные операции здесь осознанны: они выполняются при инициализации
+ * plugin до регистрации hooks, объём каталога Superpowers мал, а код получается
+ * значительно проще.
  */
 import {
   existsSync,
@@ -99,7 +100,7 @@ import {
 } from "node:path"
 
 
-/** Имя agent, автоматически создаваемого этим plugin. */
+/** Reserved name создаваемой или дополняемой Superpowers agent entry. */
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
 const BUILT_IN_AGENTS = new Set([
@@ -115,7 +116,8 @@ const BUILT_IN_AGENTS = new Set([
  * Единственное имя upstream skill, которое plugin знает специально.
  *
  * `using-superpowers` — не обычная capability: upstream plugin использует его
- * как источник bootstrap/policy и сам подмешивает его текст в model context.
+ * как источник bootstrap/policy и при подходящей истории подмешивает его текст
+ * в model context, когда wrapper делегирует upstream transform.
  * Поэтому мы не разрешаем агентам загружать этот skill повторно через native
  * `skill` tool.
  */
@@ -221,8 +223,9 @@ function parseOptions(raw?: PluginOptions): Options {
   return {
     /**
      * `Set` автоматически убирает дубликаты; spread `...` снова превращает его
-     * в Array. Сам `superpowers` удаляем из пользовательского списка, потому
-     * что этот agent создаётся plugin-ом автоматически.
+     * в Array. `superpowers` удаляем из пользовательского списка, потому что
+     * его отдельная config entry управляется не allowlist-ом: non-disabled
+     * entry дополняется (или создаётся), а disabled остаётся выключенной.
      */
     agents: [...new Set(agents.map((value) => value.trim()))]
       .filter((value) => value !== SUPERPOWERS_AGENT),
@@ -553,6 +556,27 @@ function enableAgent(
 }
 
 
+function denyConfiguredAgents(
+  config: RuntimeConfig,
+  enabledAgents: Set<string>,
+  denied: SkillPermissions,
+): void {
+  for (const [name, agent] of Object.entries(config.agent ?? {})) {
+    if (
+      name === SUPERPOWERS_AGENT
+      || enabledAgents.has(name)
+      || agent.disable === true
+    ) continue
+
+    agent.permission = normalizePermission(
+      agent.permission,
+      `agent.${name}.permission`,
+    )
+    agent.permission.skill = mergePermissions(agent.permission.skill, denied)
+  }
+}
+
+
 function validateAgents(config: RuntimeConfig, names: string[]): void {
   const invalid = names.flatMap((name) => {
     const configured = config.agent?.[name]
@@ -639,7 +663,8 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
 
 
 /**
- * Создаёт или дополняет selectable agent `superpowers`.
+ * Создаёт primary agent `superpowers` при отсутствии или дополняет существующую
+ * non-disabled entry, сохраняя явно заданные mode и visibility.
  *
  * OpenCode API: `config.agent[name]`; `mode: "primary"` — default при создании.
  *
@@ -791,16 +816,16 @@ function createSuperpowersAgentPlugin(
     uniqueSkills.filter((name) => name !== POLICY_SKILL)
 
   /**
-   * Baseline: Superpowers skills запрещены всем агентам.
-   * Это позволяет не знать полный registry OpenCode agents.
+   * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
+   * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
    */
   const denied =
     permissions(uniqueSkills, "deny")
 
   /**
    * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
-   * deny: upstream transform уже inject-ит этот policy в context, повторная
-   * загрузка через native `skill` tool не нужна.
+   * deny: policy загружает upstream transform, когда история подходит для
+   * injection; явная повторная загрузка через native `skill` tool не нужна.
    */
   const enabled: SkillPermissions = {
     ...permissions(capabilities, "allow"),
@@ -817,25 +842,27 @@ function createSuperpowersAgentPlugin(
     const runtimeConfig = config as RuntimeConfig
     const draft = structuredClone(runtimeConfig)
 
-    /** Built-ins are registered after config hooks, so validate against both sources. */
+    /** Absent built-ins are valid allowlist targets before OpenCode registers them. */
     validateAgents(draft, options.agents)
 
     /**
      * Делегируем upstream его собственную регистрацию skills path.
      *
      * Upstream знает собственный package layout и добавляет свой `skills/`
-     * в `config.skills.paths`. Из-за известного OpenCode lifecycle bug этот
-     * путь иногда приходится дополнительно прописывать статически; это
-     * workaround из README, а не логика этого wrapper-а.
+     * в `config.skills.paths`.
      */
     await upstream.config(draft as Config)
 
     /** После upstream config накладываем наш access-control. */
     denyGlobally(draft, denied)
 
+    const explicitlyEnabled = new Set(options.agents)
+    denyConfiguredAgents(draft, explicitlyEnabled, denied)
+
     /**
-     * Перебираем только explicit allowlist пользователя. Все остальные agents
-     * автоматически остаются под global deny.
+     * Перебираем explicit allowlist пользователя. Configured agents вне него
+     * получают собственные exact deny, чтобы agent-level wildcard/exact rules
+     * не могли перекрыть global baseline.
      */
     for (const agent of options.agents) {
       draft.agent ??= {}
@@ -843,7 +870,7 @@ function createSuperpowersAgentPlugin(
       enableAgent(draft, agent, enabled)
     }
 
-    /** Итоговая config.agent запись определяет bootstrap scope этого agent. */
+    /** Готовим bootstrap allowlist, публикуемый только после успешного commit. */
     const nextEnabledAgents = new Set(options.agents)
     if (configureSuperpowersAgent(draft, enabled)) {
       nextEnabledAgents.add(SUPERPOWERS_AGENT)
@@ -865,8 +892,9 @@ function createSuperpowersAgentPlugin(
      * Experimental OpenCode hook вызывается непосредственно перед model call и
      * позволяет изменить набор сообщений, отправляемых модели.
      *
-     * Сам bootstrap мы не строим и не копируем: если текущий agent разрешён,
-     * просто вызываем оригинальный upstream transform.
+      * Сам bootstrap мы не строим и не копируем: если agent хронологически
+      * последнего user message разрешён, вызываем оригинальный upstream
+      * transform.
      */
     "experimental.chat.messages.transform":
       async (hookInput, output) => {

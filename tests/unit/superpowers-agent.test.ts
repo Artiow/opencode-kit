@@ -788,6 +788,91 @@ for (const scope of ["global", "enabled-agent"] as const) {
   }
 }
 
+const nonEnabledAgentCases: Array<{
+  name: string
+  permission: unknown
+  expectedPrefix: Array<[string, unknown]>
+  permissionWildcard?: Action
+}> = [
+  {
+    name: "scalar permission allow",
+    permission: "allow",
+    expectedPrefix: [],
+    permissionWildcard: "allow",
+  },
+  {
+    name: "scalar skill ask",
+    permission: { bash: "ask", skill: "ask" },
+    expectedPrefix: [["*", "ask"]],
+  },
+  ...(["allow", "ask", "deny"] as const).flatMap((action) => [
+    {
+      name: `wildcard ${action}`,
+      permission: {
+        custom: { retained: true },
+        skill: { "brain*": action, unrelated: "ask" },
+      },
+      expectedPrefix: [["brain*", action], ["unrelated", "ask"]] as Array<[string, unknown]>,
+    },
+    {
+      name: `exact ${action}`,
+      permission: {
+        custom: { retained: true },
+        skill: { brainstorming: action, "using-superpowers": action, unrelated: "allow" },
+      },
+      expectedPrefix: [["unrelated", "allow"]] as Array<[string, unknown]>,
+    },
+  ]),
+]
+
+for (const testCase of nonEnabledAgentCases) {
+  test(`configured non-enabled agent denies bundled skills over ${testCase.name}`, async () => {
+    const hooks = await load()
+    const reviewer: Record<string, any> = {
+      model: "provider/model",
+      customAgentField: { retained: true },
+      permission: structuredClone(testCase.permission),
+    }
+    const config: Record<string, any> = { agent: { reviewer } }
+
+    await hooks.config!(config as never)
+
+    const configured = config.agent.reviewer
+    assert.deepEqual(Object.entries(configured.permission.skill), [
+      ...testCase.expectedPrefix,
+      ["brainstorming", "deny"],
+      ["using-superpowers", "deny"],
+    ])
+    assert.equal(resolveSkillPermission(configured.permission.skill, "brainstorming"), "deny")
+    assert.equal(resolveSkillPermission(configured.permission.skill, "using-superpowers"), "deny")
+    assert.equal(configured.model, "provider/model")
+    assert.strictEqual(configured.customAgentField, reviewer.customAgentField)
+    if (testCase.permissionWildcard) {
+      assert.equal(configured.permission["*"], testCase.permissionWildcard)
+    }
+    if (typeof testCase.permission === "object" && testCase.permission !== null) {
+      const original = testCase.permission as Record<string, unknown>
+      if ("bash" in original) assert.equal(configured.permission.bash, "ask")
+      if ("custom" in original) assert.deepEqual(configured.permission.custom, { retained: true })
+    }
+  })
+}
+
+test("leaves a configured disabled non-enabled agent untouched", async () => {
+  const hooks = await load()
+  const reviewer = {
+    disable: true,
+    permission: { skill: { brainstorming: "allow" }, bash: "ask" },
+    customAgentField: { retained: true },
+  }
+  const config: Record<string, any> = { agent: { reviewer } }
+
+  await hooks.config!(config as never)
+
+  assert.strictEqual(config.agent.reviewer, reviewer)
+  assert.deepEqual(config.agent.reviewer, reviewer)
+})
+
 test("appends owned skill decisions after conflicting global and agent rules", async () => {
   const hooks = await load({ agents: ["build"] })
   const config: Record<string, any> = {
