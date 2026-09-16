@@ -7,8 +7,20 @@ import SuperpowersAgentPlugin from "../../plugins/superpowers-agent"
 const BRAINSTORMING = "brainstorming"
 const POLICY = "using-superpowers"
 
-async function load(options?: PluginOptions): Promise<Hooks> {
-  return SuperpowersAgentPlugin({ directory: process.cwd() } as never, options)
+type LogEntry = { service: string; level: string; message: string; extra?: Record<string, unknown> }
+
+async function load(options?: PluginOptions, logs: LogEntry[] = []): Promise<Hooks> {
+  return SuperpowersAgentPlugin({
+    directory: process.cwd(),
+    client: {
+      app: {
+        log: async ({ body }: { body: LogEntry }) => {
+          logs.push(body)
+          return { data: true }
+        },
+      },
+    },
+  } as never, options)
 }
 
 function userMessage(sessionID: string, agent: string, id = "user", created = 1) {
@@ -115,8 +127,24 @@ test("enables agents from explicit plugin tuple options", async () => {
   assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
 })
 
-test("rejects invalid explicit plugin tuple options", async () => {
-  await assert.rejects(load({ agents: "build" } as never), /"agents" must be an array of non-empty strings/)
+test("warns and disables additional agents for invalid explicit plugin options", async () => {
+  const logs: LogEntry[] = []
+  const hooks = await load({ agents: "build" } as never, logs)
+  const config: Record<string, any> = { agent: { build: {} } }
+
+  await hooks.config!(config as never)
+
+  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
+  assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
+  assert.deepEqual(logs, [{
+    service: "superpowers-agent",
+    level: "warn",
+    message: "Invalid agent configuration; additional agents are disabled",
+    extra: {
+      source: "plugin-options",
+      error: '[superpowers-agent] "agents" must be an array of non-empty strings',
+    },
+  }])
 })
 
 test("preserves unrelated permissions while denying bundled skills to non-enabled agents", async () => {
@@ -186,7 +214,7 @@ test("normalizes scalar global and agent permissions", async () => {
   assert.equal(config.agent.superpowers.permission.skill[POLICY], "deny")
 })
 
-test("rejects invalid permission forms", async (t) => {
+test("logs invalid permission forms without changing config", async (t) => {
   for (const [name, config, expected] of [
     ["global permission", { permission: true, agent: {} }, /permission must/],
     ["global skill", { permission: { skill: true }, agent: {} }, /permission\.skill must/],
@@ -194,25 +222,37 @@ test("rejects invalid permission forms", async (t) => {
     ["agent skill", { agent: { superpowers: { permission: { skill: true } } } }, /permission\.skill must/],
   ] as const) {
     await t.test(name, async () => {
-      const hooks = await load()
-      await assert.rejects(hooks.config!(config as never), expected)
+      const logs: LogEntry[] = []
+      const hooks = await load(undefined, logs)
+      const snapshot = structuredClone(config)
+
+      await hooks.config!(config as never)
+
+      assert.deepEqual(config, snapshot)
+      assert.equal(logs.length, 1)
+      assert.equal(logs[0]?.service, "superpowers-agent")
+      assert.equal(logs[0]?.level, "error")
+      assert.equal(logs[0]?.message, "Failed to configure Superpowers; plugin is disabled")
+      assert.match(String(logs[0]?.extra?.error), expected)
     })
   }
 })
 
 test("discards staged upstream changes when wrapper validation fails", async () => {
-  const hooks = await load()
+  const logs: LogEntry[] = []
+  const hooks = await load(undefined, logs)
   const permission = { skill: true }
   const retained = { value: true }
   const config: Record<string, any> = { permission, retained }
   const snapshot = structuredClone(config)
 
-  await assert.rejects(hooks.config!(config as never), /permission\.skill must/)
+  await hooks.config!(config as never)
 
   assert.deepEqual(config, snapshot)
   assert.strictEqual(config.permission, permission)
   assert.strictEqual(config.retained, retained)
   assert.equal("skills" in config, false)
+  assert.match(String(logs[0]?.extra?.error), /permission\.skill must/)
 })
 
 test("atomically commits real upstream and wrapper changes while preserving unchanged references", async () => {
@@ -231,17 +271,19 @@ test("atomically commits real upstream and wrapper changes while preserving unch
 })
 
 test("detects an uncommittable root before applying staged changes", async () => {
-  const hooks = await load()
+  const logs: LogEntry[] = []
+  const hooks = await load(undefined, logs)
   const agent = {}
   const config: Record<string, any> = {}
   Object.defineProperty(config, "agent", { configurable: true, enumerable: true, value: agent, writable: false })
 
-  await assert.rejects(hooks.config!(config as never), /cannot replace config\.agent/)
+  await hooks.config!(config as never)
 
   assert.deepEqual(config, { agent: {} })
   assert.strictEqual(config.agent, agent)
   assert.equal("permission" in config, false)
   assert.equal("skills" in config, false)
+  assert.match(String(logs[0]?.extra?.error), /cannot replace config\.agent/)
 })
 
 test("routes real upstream bootstrap only for the latest enabled user", async () => {

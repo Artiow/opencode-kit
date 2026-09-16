@@ -49,7 +49,9 @@ Whitespace is trimmed, duplicate names are removed, and `superpowers` is implici
 
 When `OPENCODE_SUPERPOWERS_AGENTS` is defined, it replaces the explicit plugin `agents` option; the two lists are never merged. An absent environment variable falls back to plugin options, while an explicit `[]` enables no additional agents.
 
-Malformed JSON reports `invalid OPENCODE_SUPERPOWERS_AGENTS`; a non-array, non-string item, or blank item reports `"agents" must be an array of non-empty strings`.
+Malformed JSON, a non-array, a non-string item, or a blank item writes a `superpowers-agent` warning to the OpenCode log and disables additional agents. The generated `superpowers` agent remains available. OpenCode logs are stored under `~/.local/share/opencode/log/` on Linux and macOS and can also be printed with `opencode --print-logs`.
+
+If the installed Superpowers release is structurally incompatible or its skill assets are invalid, the wrapper logs an error and disables itself without preventing OpenCode from starting. A config-hook failure is also logged and its staged changes are discarded.
 
 ### Agents And Permissions
 

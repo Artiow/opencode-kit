@@ -14,7 +14,7 @@
  * plugin не владеет: какие агенты получают skills и bootstrap.
  */
 
-import type { Config, Hooks, Plugin, PluginOptions } from "@opencode-ai/plugin"
+import type { Config, Hooks, Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin"
 import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
 
 /**
@@ -74,8 +74,45 @@ type RuntimeConfig = Omit<Config, "permission" | "agent"> & { permission?: Permi
 type Messages = Parameters<NonNullable<Hooks["experimental.chat.messages.transform"]>>[1]["messages"]
 
 type Options = { agents: string[] }
+type LogExtra = Record<string, unknown>
 
 const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
+const SERVICE = "superpowers-agent"
+
+
+// noinspection JSUnusedGlobalSymbols
+class Logger {
+  private readonly client: PluginInput["client"]
+
+  constructor(client: PluginInput["client"]) {
+    this.client = client
+  }
+
+  debug(message: string, extra?: LogExtra) {
+    return this.log("debug", message, extra)
+  }
+
+  info(message: string, extra?: LogExtra) {
+    return this.log("info", message, extra)
+  }
+
+  warn(message: string, extra?: LogExtra) {
+    return this.log("warn", message, extra)
+  }
+
+  error(message: string, extra?: LogExtra) {
+    return this.log("error", message, extra)
+  }
+
+  private log(level: "debug" | "info" | "error" | "warn", message: string, extra?: LogExtra) {
+    return this.client.app.log({ body: { service: SERVICE, level, message, ...(extra ? { extra } : {}) } })
+  }
+}
+
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 
 function parseOptions(raw?: PluginOptions): Options {
@@ -407,8 +444,16 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
 
 
 const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
+  const logger = new Logger(input.client)
   const environment = process.env[AGENTS_ENV]
-  const options = environment === undefined ? parseOptions(rawOptions) : environmentOptions(environment)
+
+  let options: Options
+  try {
+    options = environment === undefined ? parseOptions(rawOptions) : environmentOptions(environment)
+  } catch (error) {
+    await logger.warn("Invalid agent configuration; additional agents are disabled", { error: errorDetail(error) })
+    options = { agents: [] }
+  }
 
   /**
    * Инициализируем upstream plugin как библиотеку.
@@ -417,56 +462,64 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
    * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
    * этот wrapper явно его не вызовет.
    */
-  if (typeof SuperpowersPlugin !== "function") {
-    throw new Error("[superpowers-agent] upstream plugin is not callable")
-  }
-
-  const upstream = await SuperpowersPlugin(input)
-
-  if (typeof upstream?.config !== "function") {
-    throw new Error("[superpowers-agent] required upstream config hook is not callable")
-  }
-
-  if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
-    throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
-  }
-
-  const dir = skillsDir()
-
-  /**
-   * Наш собственный discovery нужен только для permissions. Само содержимое
-   * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
-   */
-  let discoveredSkills: DiscoveredSkill[]
+  let upstreamConfig: NonNullable<Hooks["config"]>
+  let upstreamTransform: NonNullable<Hooks["experimental.chat.messages.transform"]>
+  let uniqueSkills: string[]
   try {
-    discoveredSkills = discoverSkills(dir)
+    if (typeof SuperpowersPlugin !== "function") {
+      throw new Error("[superpowers-agent] upstream plugin is not callable")
+    }
+
+    const upstream: Hooks = await SuperpowersPlugin(input)
+
+    if (typeof upstream?.config !== "function") {
+      throw new Error("[superpowers-agent] required upstream config hook is not callable")
+    }
+
+    if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
+      throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
+    }
+
+    upstreamConfig = upstream.config
+    upstreamTransform = upstream["experimental.chat.messages.transform"]
+
+    const dir = skillsDir()
+
+    /**
+     * Наш собственный discovery нужен только для permissions. Само содержимое
+     * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
+     */
+    const discoveredSkills = discoverSkills(dir)
+
+    if (!discoveredSkills.length) {
+      throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
+    }
+
+    const skillsByName = new Map<string, DiscoveredSkill[]>()
+    for (const skill of discoveredSkills) {
+      const matches = skillsByName.get(skill.name) ?? []
+      matches.push(skill)
+      skillsByName.set(skill.name, matches)
+    }
+    const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
+
+    if (conflicts.length) {
+      /** Permissions identify skills only by name, so bundled names must be unique. */
+      const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
+      throw new Error(`[superpowers-agent] ${detail}`)
+    }
+
+    uniqueSkills = discoveredSkills.map((skill) => skill.name)
+
+    if (!uniqueSkills.includes(POLICY_SKILL)) {
+      /** Без upstream policy skill невозможно получить полный Superpowers mode. */
+      throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
+    }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`)
-  }
-  const skillsByName = new Map<string, DiscoveredSkill[]>()
-  for (const skill of discoveredSkills) {
-    const matches = skillsByName.get(skill.name) ?? []
-    matches.push(skill)
-    skillsByName.set(skill.name, matches)
-  }
-  const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
-
-  if (!discoveredSkills.length) {
-    throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
-  }
-
-  if (conflicts.length) {
-    /** Permissions identify skills only by name, so bundled names must be unique. */
-    const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
-    throw new Error(`[superpowers-agent] ${detail}`)
-  }
-
-  const uniqueSkills = discoveredSkills.map((skill) => skill.name)
-
-  if (!uniqueSkills.includes(POLICY_SKILL)) {
-    /** Без upstream policy skill невозможно получить полный Superpowers mode. */
-    throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
+    await logger.error("Failed to initialize Superpowers; plugin is disabled", {
+      error: errorDetail(error),
+    })
+    return {}
   }
 
   const capabilities = uniqueSkills.filter((name) => name !== POLICY_SKILL)
@@ -492,46 +545,54 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
 
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
     const runtimeConfig = config as RuntimeConfig
-    const draft = structuredClone(runtimeConfig)
 
-    /**
-     * Делегируем upstream его собственную регистрацию skills path.
-     *
-     * Upstream знает собственный package layout и добавляет свой `skills/`
-     * в `config.skills.paths`.
-     */
-    await upstream.config(draft as Config)
+    try {
+      const draft = structuredClone(runtimeConfig)
 
-    /**
-     * Накладываем access-control после upstream, чтобы wrapper имел последнее
-     * слово по owned skill permissions независимо от добавленных upstream rules.
-     */
-    denyGlobally(draft, denied)
+      /**
+       * Делегируем upstream его собственную регистрацию skills path.
+       *
+       * Upstream знает собственный package layout и добавляет свой `skills/`
+       * в `config.skills.paths`.
+       */
+      await upstreamConfig(draft as Config)
 
-    const explicitlyEnabled = new Set(options.agents)
-    denyConfiguredAgents(draft, explicitlyEnabled, denied)
+      /**
+       * Накладываем access-control после upstream, чтобы wrapper имел последнее
+       * слово по owned skill permissions независимо от добавленных upstream rules.
+       */
+      denyGlobally(draft, denied)
 
-    const nextEnabledAgents = new Set<string>()
+      const explicitlyEnabled = new Set(options.agents)
+      denyConfiguredAgents(draft, explicitlyEnabled, denied)
 
-    /**
-     * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
-     * global deny только для существующего explicit opt-in. Отсутствующее имя
-     * игнорируется и не создаёт новый agent из возможной опечатки.
-     */
-    for (const agent of options.agents) {
-      if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
+      const nextEnabledAgents = new Set<string>()
+
+      /**
+       * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
+       * global deny только для существующего explicit opt-in. Отсутствующее имя
+       * игнорируется и не создаёт новый agent из возможной опечатки.
+       */
+      for (const agent of options.agents) {
+        if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
+      }
+      if (configureSuperpowersAgent(draft, enabled)) {
+        nextEnabledAgents.add(SUPERPOWERS_AGENT)
+      }
+
+      /**
+       * Не публикуем bootstrap scope до commit: transform не должен делегировать
+       * upstream для конфигурации, которая не смогла установиться.
+       */
+      commitConfig(runtimeConfig, draft)
+      enabledAgents.clear()
+      for (const agent of nextEnabledAgents) enabledAgents.add(agent)
+    } catch (error) {
+      enabledAgents.clear()
+      await logger.error("Failed to configure Superpowers; plugin is disabled", {
+        error: errorDetail(error),
+      })
     }
-    if (configureSuperpowersAgent(draft, enabled)) {
-      nextEnabledAgents.add(SUPERPOWERS_AGENT)
-    }
-
-    /**
-     * Не публикуем bootstrap scope до commit: transform не должен делегировать
-     * upstream для конфигурации, которая не смогла установиться.
-     */
-    commitConfig(runtimeConfig, draft)
-    enabledAgents.clear()
-    for (const agent of nextEnabledAgents) enabledAgents.add(agent)
   }
 
   return {
@@ -554,7 +615,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * - duplicate protection/caching;
        * - фактическую mutation messages.
        */
-      await upstream["experimental.chat.messages.transform"](hookInput, output)
+      await upstreamTransform(hookInput, output)
     },
   }
 }

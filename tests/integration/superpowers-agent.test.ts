@@ -33,6 +33,38 @@ test("accepts options from explicit plugin registration", async () => {
   assert.equal(config.agent.superpowers.permission.skill.brainstorming, "allow")
 })
 
+test("writes invalid plugin options to the OpenCode log and continues", async () => {
+  const plugin = `file://${join(process.cwd(), "plugins", "superpowers-agent.ts")}`
+  const { stderr, stdout } = await runOpenCode(["debug", "config", "--print-logs", "--log-level", "WARN"], {
+    config: {
+      $schema: "https://opencode.ai/config.json",
+      plugin: [[plugin, { agents: "build" }]],
+      agent: { build: {} },
+    },
+  })
+  const config = JSON.parse(stdout)
+
+  assert.equal(config.agent.build.permission.skill.brainstorming, "deny")
+  assert.equal(config.agent.superpowers.permission.skill.brainstorming, "allow")
+  assert.match(stderr, /level=WARN.*message="Invalid agent configuration; additional agents are disabled".*source=plugin-options/)
+})
+
+test("disables the plugin for invalid Superpowers assets", async () => {
+  const { stdout } = await runOpenCode(["debug", "config"], {
+    installSuperpowersAgent: true,
+    provisionDependencies: true,
+    setup: async ({ root }) => {
+      await writeFile(
+        join(root, "config", "opencode", "node_modules", "superpowers", "skills", "using-superpowers", "SKILL.md"),
+        "---\ndescription: invalid fixture\n---\nfixture\n",
+      )
+    },
+  })
+  const config = JSON.parse(stdout)
+
+  assert.equal(config.agent?.superpowers, undefined)
+})
+
 test("debug config preserves superpowers agent customization", async () => {
   const { stderr, stdout } = await runOpenCode(["debug", "config"], {
     installSuperpowersAgent: true,
@@ -179,16 +211,26 @@ for (const [name, value] of [
   ["non-string item", '["build", 1]'],
   ["blank item", '["build", " "]'],
 ]) {
-  test(`rejects ${name} environment options visibly`, async () => {
-    await assert.rejects(
-      runIsolatedPlugin('const plugin = (await import(PLUGIN_URL)).default; await plugin({ directory: process.cwd() })', {
-        env: { OPENCODE_SUPERPOWERS_AGENTS: value },
-        provisionDependencies: true,
-      }),
-      (error: NodeJS.ErrnoException & { stderr?: string }) => {
-        assert.match(error.stderr ?? error.message, /\[superpowers-agent]/)
-        return true
-      },
-    )
+  test(`logs ${name} environment options and continues safely`, async () => {
+    const { stdout } = await runIsolatedPlugin(`
+      const logs = []
+      const client = { app: { log: async ({ body }) => logs.push(body) } }
+      const plugin = (await import(PLUGIN_URL)).default
+      const hooks = await plugin({ directory: process.cwd(), client })
+      const config = { agent: { build: {} } }
+      await hooks.config(config)
+      console.log(JSON.stringify({ config, logs }))
+    `, {
+      env: { OPENCODE_SUPERPOWERS_AGENTS: value },
+      provisionDependencies: true,
+    })
+    const { config, logs } = JSON.parse(stdout)
+
+    assert.equal(config.agent.build.permission.skill.brainstorming, "deny")
+    assert.equal(config.agent.superpowers.permission.skill.brainstorming, "allow")
+    assert.equal(logs.length, 1)
+    assert.equal(logs[0].service, "superpowers-agent")
+    assert.equal(logs[0].level, "warn")
+    assert.equal(logs[0].extra.source, "OPENCODE_SUPERPOWERS_AGENTS")
   })
 }
