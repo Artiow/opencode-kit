@@ -104,15 +104,19 @@ test("leaves a disabled superpowers agent untouched and suppresses bootstrap", a
   assert.equal(hasBootstrap(messages), false)
 })
 
-test("ignores tuple options passed to the auto-discovered default export", async () => {
+test("enables agents from explicit plugin tuple options", async () => {
   const hooks = await load({ agents: ["build"] })
   const config: Record<string, any> = { agent: { build: {} } }
 
   await hooks.config!(config as never)
 
-  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
+  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "allow")
   assert.equal(config.agent.build.permission.skill[POLICY], "deny")
   assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
+})
+
+test("rejects invalid explicit plugin tuple options", async () => {
+  await assert.rejects(load({ agents: "build" } as never), /"agents" must be an array of non-empty strings/)
 })
 
 test("preserves unrelated permissions while denying bundled skills to non-enabled agents", async () => {

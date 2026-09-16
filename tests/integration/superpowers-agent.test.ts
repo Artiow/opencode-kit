@@ -17,6 +17,22 @@ test("auto-discovers only the wrapper from the global plugins directory", async 
   assert.match(config.plugin[0], /\/plugins\/superpowers-agent\.ts$/)
 })
 
+test("accepts options from explicit plugin registration", async () => {
+  const plugin = `file://${join(process.cwd(), "plugins", "superpowers-agent.ts")}`
+  const { stderr, stdout } = await runOpenCode(["debug", "config"], {
+    config: {
+      $schema: "https://opencode.ai/config.json",
+      plugin: [[plugin, { agents: ["build"] }]],
+      agent: { build: {} },
+    },
+  })
+  const config = JSON.parse(stdout)
+
+  assert.equal(stderr, "")
+  assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
+  assert.equal(config.agent.superpowers.permission.skill.brainstorming, "allow")
+})
+
 test("debug config preserves superpowers agent customization", async () => {
   const { stderr, stdout } = await runOpenCode(["debug", "config"], {
     installSuperpowersAgent: true,
@@ -46,8 +62,8 @@ test("debug config preserves superpowers agent customization", async () => {
 test("normalizes environment options for the auto-discovered plugin", async () => {
   const { stdout } = await runIsolatedPlugin(`
     const plugin = (await import(PLUGIN_URL)).default
-    const hooks = await plugin({ directory: process.cwd() })
-    const config = { agent: { build: {} } }
+    const hooks = await plugin({ directory: process.cwd() }, { agents: ["reviewer"] })
+    const config = { agent: { build: {}, reviewer: {} } }
     await hooks.config(config)
     console.log(JSON.stringify(config))
   `, {
@@ -58,6 +74,7 @@ test("normalizes environment options for the auto-discovered plugin", async () =
 
   assert.equal(config.agent.superpowers.mode, "primary")
   assert.equal(config.agent.build.permission.skill.brainstorming, "allow")
+  assert.equal(config.agent.reviewer.permission.skill.brainstorming, "deny")
   assert.equal(config.permission.skill.brainstorming, "deny")
   assert.equal(config.skills.paths.length, 1)
 })
@@ -164,7 +181,7 @@ for (const [name, value] of [
 ]) {
   test(`rejects ${name} environment options visibly`, async () => {
     await assert.rejects(
-      runIsolatedPlugin("await import(PLUGIN_URL)", {
+      runIsolatedPlugin('const plugin = (await import(PLUGIN_URL)).default; await plugin({ directory: process.cwd() })', {
         env: { OPENCODE_SUPERPOWERS_AGENTS: value },
         provisionDependencies: true,
       }),

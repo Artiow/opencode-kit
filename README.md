@@ -10,7 +10,17 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 
 ## Scoped Superpowers
 
-`plugins/superpowers-agent.ts` is the only Superpowers plugin OpenCode should load. It is auto-discovered after Stow deploys it to `~/.config/opencode/plugins/`; do not add it to `plugin`, load the upstream `superpowers` plugin separately, or combine auto-discovery with a tuple entry. Duplicate registration can discard options or inject the upstream bootstrap globally.
+`plugins/superpowers-agent.ts` is the only Superpowers plugin OpenCode should load. The Stow deployment places it in `~/.config/opencode/plugins/`, where OpenCode auto-discovers it. Alternatively, a copy outside any auto-discovered `plugin/` or `plugins/` directory can be registered explicitly with plugin options:
+
+```json
+{
+  "plugin": [
+    ["file:///path/to/superpowers-agent.ts", { "agents": ["build", "reviewer"] }]
+  ]
+}
+```
+
+Use exactly one loading mode. Do not combine auto-discovery with an explicit entry or load the upstream `superpowers` plugin separately. Duplicate registration can discard options or inject the upstream bootstrap globally.
 
 Superpowers is a runtime dependency, not a deployed resource. It must resolve from the deployed plugin's OpenCode configuration environment, normally `~/.config/opencode/node_modules`. The repository `node_modules` is excluded from Stow and is for development and tests only. Install the pinned release in the configuration environment before starting OpenCode:
 
@@ -21,7 +31,7 @@ npm install --prefix "$HOME/.config/opencode" --save-exact \
 
 The pinned release above matches this repository's tested environment. Other releases are accepted when they provide the required plugin hooks and valid skill assets. A missing or structurally incompatible dependency fails plugin initialization visibly.
 
-The generated `superpowers` primary agent is enabled by default. To additionally enable existing agents, set a JSON array in the environment before starting OpenCode:
+The generated `superpowers` primary agent is enabled by default. Explicit registration accepts an `agents` array as shown above. With either loading mode, `OPENCODE_SUPERPOWERS_AGENTS` can supply the array before OpenCode starts:
 
 ```json
 {
@@ -36,6 +46,8 @@ export OPENCODE_SUPERPOWERS_AGENTS
 ```
 
 Whitespace is trimmed, duplicate names are removed, and `superpowers` is implicit. The value must be valid JSON containing only non-empty strings. Only agents already present in the merged `agent` config are enabled; missing or explicitly disabled names are ignored. To enable a built-in, add an override for it to `agent` because OpenCode materializes built-ins after plugin config hooks.
+
+When `OPENCODE_SUPERPOWERS_AGENTS` is defined, it replaces the explicit plugin `agents` option; the two lists are never merged. An absent environment variable falls back to plugin options, while an explicit `[]` enables no additional agents.
 
 Malformed JSON reports `invalid OPENCODE_SUPERPOWERS_AGENTS`; a non-array, non-string item, or blank item reports `"agents" must be an array of non-empty strings`.
 

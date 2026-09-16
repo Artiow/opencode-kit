@@ -14,7 +14,7 @@
  * plugin не владеет: какие агенты получают skills и bootstrap.
  */
 
-import type { Config, Hooks, Plugin } from "@opencode-ai/plugin"
+import type { Config, Hooks, Plugin, PluginOptions } from "@opencode-ai/plugin"
 import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
 
 /**
@@ -78,18 +78,8 @@ type Options = { agents: string[] }
 const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 
 
-function environmentOptions(value: string | undefined): Options {
-  if (value === undefined) {
-    return { agents: [] }
-  }
-
-  let agents: unknown
-  try {
-    agents = JSON.parse(value)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`[superpowers-agent] invalid ${AGENTS_ENV}: ${detail}`)
-  }
+function parseOptions(raw?: PluginOptions): Options {
+  const agents = raw?.agents ?? []
 
   if (!Array.isArray(agents) || agents.some((agent) => typeof agent !== "string" || !agent.trim())) {
     throw new Error('[superpowers-agent] "agents" must be an array of non-empty strings')
@@ -102,6 +92,18 @@ function environmentOptions(value: string | undefined): Options {
    */
   const uniqueAgents = [...new Set(agents.map((agent) => agent.trim()))].filter((agent) => agent !== SUPERPOWERS_AGENT)
   return { agents: uniqueAgents }
+}
+
+function environmentOptions(value: string): Options {
+  let agents: unknown
+  try {
+    agents = JSON.parse(value)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`[superpowers-agent] invalid ${AGENTS_ENV}: ${detail}`)
+  }
+
+  return parseOptions({ agents })
 }
 
 
@@ -404,13 +406,9 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
 }
 
 
-/**
- * Auto-discovery не передаёт tuple options, поэтому allowlist фиксируется из
- * environment при загрузке модуля. Изменение environment требует restart.
- */
-const options = environmentOptions(process.env[AGENTS_ENV])
-
-const SuperpowersAgentPlugin: Plugin = async (input) => {
+const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
+  const environment = process.env[AGENTS_ENV]
+  const options = environment === undefined ? parseOptions(rawOptions) : environmentOptions(environment)
 
   /**
    * Инициализируем upstream plugin как библиотеку.
