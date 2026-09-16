@@ -92,13 +92,11 @@ async function hasOngoingRebase(worktree: string): Promise<boolean> {
   }
 
   const rebaseMergePath = await runGit(worktree, ["rev-parse", "--git-path", "rebase-merge"])
-  // noinspection RedundantIfStatementJS
   if (rebaseMergePath.code === 0 && rebaseMergePath.stdout.trim() && (await pathExists(rebaseMergePath.stdout.trim()))) {
     return true
   }
 
   const rebaseApplyPath = await runGit(worktree, ["rev-parse", "--git-path", "rebase-apply"])
-  // noinspection RedundantIfStatementJS
   if (rebaseApplyPath.code === 0 && rebaseApplyPath.stdout.trim() && (await pathExists(rebaseApplyPath.stdout.trim()))) {
     return true
   }
@@ -114,7 +112,6 @@ async function hasUnmergedConflicts(worktree: string): Promise<boolean> {
   return result.stdout.trim().length > 0
 }
 
-// noinspection JSUnusedGlobalSymbols
 export default tool({
   description:
     "Rebase a feature branch onto a base branch and update the remote feature branch. " +
@@ -233,6 +230,8 @@ export default tool({
       )
     }
 
+    // Git cannot force-update the currently checked-out branch. Detaching keeps
+    // the worktree clean while allowing the local base ref to mirror origin.
     const currentBranch = await runGit(worktree, ["symbolic-ref", "--short", "-q", "HEAD"])
     if (currentBranch.code === 0 && currentBranch.stdout.trim() === baseBranch) {
       const detachResult = await runGit(worktree, ["checkout", "--detach"])
@@ -246,6 +245,8 @@ export default tool({
       }
     }
 
+    // The local base is an input mirror, not user work to merge: rebasing onto
+    // the fetched remote tip avoids incorporating stale local-only commits.
     const alignBase = await runGit(worktree, ["branch", "-f", baseBranch, `origin/${baseBranch}`])
     if (alignBase.code !== 0) {
       return errorResult(
@@ -270,6 +271,8 @@ export default tool({
     if (rebaseResult.code !== 0) {
       const rebaseConflict = (await hasUnmergedConflicts(worktree)) || (await hasOngoingRebase(worktree))
       if (rebaseConflict) {
+        // Preserve Git's conflict state for deliberate manual resolution; an
+        // automatic abort or guessed resolution could discard user work.
         return errorResult(
           "REBASE_CONFLICT",
           baseBranch,
@@ -286,6 +289,8 @@ export default tool({
       )
     }
 
+    // Rebase rewrites history. The lease permits that update but rejects the
+    // push if origin changed since fetch, protecting concurrent remote work.
     const pushResult = await runGit(worktree, ["push", "--force-with-lease", "origin", featureBranch])
     if (pushResult.code !== 0) {
       return errorResult(
