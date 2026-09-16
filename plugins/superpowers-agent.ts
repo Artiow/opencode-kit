@@ -14,7 +14,7 @@
  * plugin не владеет: какие агенты получают skills и bootstrap.
  */
 
-import type { Config, Hooks, Plugin, PluginOptions } from "@opencode-ai/plugin"
+import type { Config, Hooks, Plugin } from "@opencode-ai/plugin"
 import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
 
 /**
@@ -78,30 +78,6 @@ type Options = { agents: string[] }
 const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 
 
-/**
- * Проверяет пользовательские options plugin.
- *
- * OpenCode передаёт plugin options как достаточно свободную JSON-like
- * структуру (`PluginOptions`), поэтому runtime validation всё равно нужна —
- * одних TypeScript типов здесь недостаточно.
- */
-function parseOptions(raw?: PluginOptions): Options {
-  /** Отсутствующие options означают строгий opt-in без дополнительных agents. */
-  const agents = raw?.agents ?? []
-
-  if (!Array.isArray(agents) || agents.some((value) => typeof value !== "string" || !value.trim())) {
-    throw new Error('[superpowers-agent] "agents" must be an array of non-empty strings')
-  }
-
-  /**
-   * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
-   * из allowlist, поскольку его lifecycle должен уважать explicit disable:
-   * entry дополняется (или создаётся), а disabled остаётся выключенной.
-   */
-  const uniqueAgents = [...new Set(agents.map((value) => value.trim()))].filter((value) => value !== SUPERPOWERS_AGENT)
-  return { agents: uniqueAgents }
-}
-
 function environmentOptions(value: string | undefined): Options {
   if (value === undefined) {
     return { agents: [] }
@@ -115,7 +91,17 @@ function environmentOptions(value: string | undefined): Options {
     throw new Error(`[superpowers-agent] invalid ${AGENTS_ENV}: ${detail}`)
   }
 
-  return parseOptions({ agents } as PluginOptions)
+  if (!Array.isArray(agents) || agents.some((agent) => typeof agent !== "string" || !agent.trim())) {
+    throw new Error('[superpowers-agent] "agents" must be an array of non-empty strings')
+  }
+
+  /**
+   * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
+   * из allowlist, поскольку его lifecycle должен уважать explicit disable:
+   * entry дополняется (или создаётся), а disabled остаётся выключенной.
+   */
+  const uniqueAgents = [...new Set(agents.map((agent) => agent.trim()))].filter((agent) => agent !== SUPERPOWERS_AGENT)
+  return { agents: uniqueAgents }
 }
 
 
@@ -187,11 +173,6 @@ function discoverSkills(dir: string): DiscoveredSkill[] {
 
   return skills
 }
-
-type Dependencies = { skillsDir: () => string; upstreamPlugin: typeof SuperpowersPlugin }
-
-const dependencies: Dependencies = { skillsDir, upstreamPlugin: SuperpowersPlugin }
-
 
 function permissions(skills: string[], action: Action): SkillPermissions {
   return Object.fromEntries(skills.map((name) => [name, action]))
@@ -424,176 +405,160 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
 
 
 /**
- * Factory принимает injectable dependencies, чтобы contract failures можно
- * было тестировать без регистрации второго runtime plugin. Тот же `input`
- * передаётся upstream, иначе он инициализировался бы в отличающемся контексте.
+ * Auto-discovery не передаёт tuple options, поэтому allowlist фиксируется из
+ * environment при загрузке модуля. Изменение environment требует restart.
  */
-function createSuperpowersAgentPlugin(overrides: Partial<Dependencies> = {}): Plugin {
-  const deps = { ...dependencies, ...overrides }
+const options = environmentOptions(process.env[AGENTS_ENV])
 
-  return async (input, rawOptions) => {
-    const options = parseOptions(rawOptions)
+const SuperpowersAgentPlugin: Plugin = async (input) => {
+
+  /**
+   * Инициализируем upstream plugin как библиотеку.
+   *
+   * Важно: мы НЕ возвращаем его hooks OpenCode напрямую. `upstream` — просто
+   * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
+   * этот wrapper явно его не вызовет.
+   */
+  if (typeof SuperpowersPlugin !== "function") {
+    throw new Error("[superpowers-agent] upstream plugin is not callable")
+  }
+
+  const upstream = await SuperpowersPlugin(input)
+
+  if (typeof upstream?.config !== "function") {
+    throw new Error("[superpowers-agent] required upstream config hook is not callable")
+  }
+
+  if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
+    throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
+  }
+
+  const dir = skillsDir()
+
+  /**
+   * Наш собственный discovery нужен только для permissions. Само содержимое
+   * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
+   */
+  let discoveredSkills: DiscoveredSkill[]
+  try {
+    discoveredSkills = discoverSkills(dir)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`)
+  }
+  const skillsByName = new Map<string, DiscoveredSkill[]>()
+  for (const skill of discoveredSkills) {
+    const matches = skillsByName.get(skill.name) ?? []
+    matches.push(skill)
+    skillsByName.set(skill.name, matches)
+  }
+  const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
+
+  if (!discoveredSkills.length) {
+    throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
+  }
+
+  if (conflicts.length) {
+    /** Permissions identify skills only by name, so bundled names must be unique. */
+    const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
+    throw new Error(`[superpowers-agent] ${detail}`)
+  }
+
+  const uniqueSkills = discoveredSkills.map((skill) => skill.name)
+
+  if (!uniqueSkills.includes(POLICY_SKILL)) {
+    /** Без upstream policy skill невозможно получить полный Superpowers mode. */
+    throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
+  }
+
+  const capabilities = uniqueSkills.filter((name) => name !== POLICY_SKILL)
+
+  /**
+   * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
+   * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
+   */
+  const denied = permissions(uniqueSkills, "deny")
+
+  /**
+   * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
+   * deny: policy загружает upstream transform, когда история подходит для
+   * injection; явная повторная загрузка через native `skill` tool не нужна.
+   */
+  const enabled: SkillPermissions = { ...permissions(capabilities, "allow"), [POLICY_SKILL]: "deny" }
+
+  /**
+   * Одно и то же множество используется для access-control и bootstrap scope.
+   * Это исключает состояние "skills разрешены, но bootstrap не включён".
+   */
+  const enabledAgents = new Set<string>()
+
+  const configHook: NonNullable<Hooks["config"]> = async (config) => {
+    const runtimeConfig = config as RuntimeConfig
+    const draft = structuredClone(runtimeConfig)
 
     /**
-     * Инициализируем upstream plugin как библиотеку.
+     * Делегируем upstream его собственную регистрацию skills path.
      *
-     * Важно: мы НЕ возвращаем его hooks OpenCode напрямую. `upstream` — просто
-     * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
-     * этот wrapper явно его не вызовет.
+     * Upstream знает собственный package layout и добавляет свой `skills/`
+     * в `config.skills.paths`.
      */
-    if (typeof deps.upstreamPlugin !== "function") {
-      throw new Error("[superpowers-agent] upstream plugin is not callable")
-    }
-
-    const upstream = await deps.upstreamPlugin(input)
-
-    if (typeof upstream?.config !== "function") {
-      throw new Error("[superpowers-agent] required upstream config hook is not callable")
-    }
-
-    if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
-      throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
-    }
-
-    const dir = deps.skillsDir()
+    await upstream.config(draft as Config)
 
     /**
-     * Наш собственный discovery нужен только для permissions. Само содержимое
-     * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
+     * Накладываем access-control после upstream, чтобы wrapper имел последнее
+     * слово по owned skill permissions независимо от добавленных upstream rules.
      */
-    let discoveredSkills: DiscoveredSkill[]
-    try {
-      discoveredSkills = discoverSkills(dir)
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`[superpowers-agent] cannot read Superpowers skills directory ${dir}: ${detail}`)
-    }
-    const skillsByName = new Map<string, DiscoveredSkill[]>()
-    for (const skill of discoveredSkills) {
-      const matches = skillsByName.get(skill.name) ?? []
-      matches.push(skill)
-      skillsByName.set(skill.name, matches)
-    }
-    const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
+    denyGlobally(draft, denied)
 
-    if (!discoveredSkills.length) {
-      throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
-    }
+    const explicitlyEnabled = new Set(options.agents)
+    denyConfiguredAgents(draft, explicitlyEnabled, denied)
 
-    if (conflicts.length) {
-      /** Permissions identify skills only by name, so bundled names must be unique. */
-      const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
-      throw new Error(`[superpowers-agent] ${detail}`)
-    }
-
-    const uniqueSkills = discoveredSkills.map((skill) => skill.name)
-
-    if (!uniqueSkills.includes(POLICY_SKILL)) {
-      /** Без upstream policy skill невозможно получить полный Superpowers mode. */
-      throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
-    }
-
-    const capabilities = uniqueSkills.filter((name) => name !== POLICY_SKILL)
+    const nextEnabledAgents = new Set<string>()
 
     /**
-     * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
-     * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
+     * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
+     * global deny только для существующего explicit opt-in. Отсутствующее имя
+     * игнорируется и не создаёт новый agent из возможной опечатки.
      */
-    const denied = permissions(uniqueSkills, "deny")
-
-    /**
-     * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
-     * deny: policy загружает upstream transform, когда история подходит для
-     * injection; явная повторная загрузка через native `skill` tool не нужна.
-     */
-    const enabled: SkillPermissions = { ...permissions(capabilities, "allow"), [POLICY_SKILL]: "deny" }
-
-    /**
-     * Одно и то же множество используется для access-control и bootstrap scope.
-     * Это исключает состояние "skills разрешены, но bootstrap не включён".
-     */
-    const enabledAgents = new Set<string>()
-
-    const configHook: NonNullable<Hooks["config"]> = async (config) => {
-      const runtimeConfig = config as RuntimeConfig
-      const draft = structuredClone(runtimeConfig)
-
-      /**
-       * Делегируем upstream его собственную регистрацию skills path.
-       *
-       * Upstream знает собственный package layout и добавляет свой `skills/`
-       * в `config.skills.paths`.
-       */
-      await upstream.config(draft as Config)
-
-      /**
-       * Накладываем access-control после upstream, чтобы wrapper имел последнее
-       * слово по owned skill permissions независимо от добавленных upstream rules.
-       */
-      denyGlobally(draft, denied)
-
-      const explicitlyEnabled = new Set(options.agents)
-      denyConfiguredAgents(draft, explicitlyEnabled, denied)
-
-      const nextEnabledAgents = new Set<string>()
-
-      /**
-       * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
-       * global deny только для существующего explicit opt-in. Отсутствующее имя
-       * игнорируется и не создаёт новый agent из возможной опечатки.
-       */
-      for (const agent of options.agents) {
-        if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
-      }
-      if (configureSuperpowersAgent(draft, enabled)) {
-        nextEnabledAgents.add(SUPERPOWERS_AGENT)
-      }
-
-      /**
-       * Не публикуем bootstrap scope до commit: transform не должен делегировать
-       * upstream для конфигурации, которая не смогла установиться.
-       */
-      commitConfig(runtimeConfig, draft)
-      enabledAgents.clear()
-      for (const agent of nextEnabledAgents) enabledAgents.add(agent)
+    for (const agent of options.agents) {
+      if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
+    }
+    if (configureSuperpowersAgent(draft, enabled)) {
+      nextEnabledAgents.add(SUPERPOWERS_AGENT)
     }
 
-    return {
-      config: configHook,
+    /**
+     * Не публикуем bootstrap scope до commit: transform не должен делегировать
+     * upstream для конфигурации, которая не смогла установиться.
+     */
+    commitConfig(runtimeConfig, draft)
+    enabledAgents.clear()
+    for (const agent of nextEnabledAgents) enabledAgents.add(agent)
+  }
+
+  return {
+    config: configHook,
+
+    /**
+     * Не копируем bootstrap: делегирование upstream сохраняет его policy,
+     * tool mapping и duplicate protection. Wrapper отвечает только за gate по
+     * агенту последнего user turn.
+     */
+    "experimental.chat.messages.transform": async (hookInput, output) => {
+      const user = latestUser(output.messages)
+      if (!user || !enabledAgents.has(user.agent)) return
 
       /**
-       * Не копируем bootstrap: делегирование upstream сохраняет его policy,
-       * tool mapping и duplicate protection. Wrapper отвечает только за gate по
-       * агенту последнего user turn.
+       * Upstream полностью контролирует:
+       * - чтение `using-superpowers`;
+       * - оригинальный prompt/wrapper;
+       * - OpenCode tool mapping;
+       * - duplicate protection/caching;
+       * - фактическую mutation messages.
        */
-      "experimental.chat.messages.transform": async (hookInput, output) => {
-        const user = latestUser(output.messages)
-        if (!user || !enabledAgents.has(user.agent)) return
-
-        /**
-         * Upstream полностью контролирует:
-         * - чтение `using-superpowers`;
-         * - оригинальный prompt/wrapper;
-         * - OpenCode tool mapping;
-         * - duplicate protection/caching;
-         * - фактическую mutation messages.
-         */
-        await upstream["experimental.chat.messages.transform"](hookInput, output)
-      },
-    }
+      await upstream["experimental.chat.messages.transform"](hookInput, output)
+    },
   }
 }
-
-type AutoDiscoveredPlugin = Plugin & { createForTesting: typeof createSuperpowersAgentPlugin }
-
-/**
- * Auto-discovery не передаёт tuple options, поэтому allowlist фиксируется из
- * environment при загрузке модуля. Изменение environment требует restart;
- * `createForTesting` даёт тестам injectable factory без второй регистрации.
- */
-const autoDiscoveredOptions = environmentOptions(process.env[AGENTS_ENV])
-const scopedPlugin = createSuperpowersAgentPlugin()
-
-const SuperpowersAgentPlugin = Object.assign((async (input) => scopedPlugin(input, autoDiscoveredOptions)) satisfies Plugin, { createForTesting: createSuperpowersAgentPlugin }) satisfies AutoDiscoveredPlugin
 
 export default SuperpowersAgentPlugin

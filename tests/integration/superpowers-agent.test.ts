@@ -43,7 +43,7 @@ test("debug config preserves superpowers agent customization", async () => {
   assert.equal(superpowers.permission.bash, "ask")
 })
 
-test("initializes one scoped factory with environment options", async () => {
+test("normalizes environment options for the auto-discovered plugin", async () => {
   const { stdout } = await runIsolatedPlugin(`
     const plugin = (await import(PLUGIN_URL)).default
     const hooks = await plugin({ directory: process.cwd() })
@@ -51,7 +51,7 @@ test("initializes one scoped factory with environment options", async () => {
     await hooks.config(config)
     console.log(JSON.stringify(config))
   `, {
-    env: { OPENCODE_SUPERPOWERS_AGENTS: '["build"]' },
+    env: { OPENCODE_SUPERPOWERS_AGENTS: '[" build ","build","superpowers"]' },
     provisionDependencies: true,
   })
   const config = JSON.parse(stdout)
@@ -64,20 +64,8 @@ test("initializes one scoped factory with environment options", async () => {
 
 test("routes bootstrap from user metadata in an isolated plugin", async () => {
   const { stdout } = await runIsolatedPlugin(`
-    const exported = (await import(PLUGIN_URL)).default
-    const transformed = []
-    const references = []
-    const plugin = exported.createForTesting({
-      skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
-      upstreamPlugin: async () => ({
-        config: async () => {},
-        "experimental.chat.messages.transform": async (input, output) => {
-          transformed.push(output.label)
-          references.push(input === output.expectedInput && output === output.expectedOutput)
-        },
-      }),
-    })
-    const hooks = await plugin({}, { agents: ["build"] })
+    const plugin = (await import(PLUGIN_URL)).default
+    const hooks = await plugin({ directory: process.cwd() })
     await hooks.config({ agent: { build: {} } })
     const message = (sessionID, agent) => ({
       info: {
@@ -88,61 +76,28 @@ test("routes bootstrap from user metadata in an isolated plugin", async () => {
         agent,
         model: { providerID: "test", modelID: "test" },
       },
-      parts: [],
+      parts: [{ id: "part-" + sessionID, sessionID, messageID: "user-" + sessionID, type: "text", text: "hello" }],
     })
+    const transformed = {}
     for (const [label, sessionID, agent] of [
       ["root", "root", "build"],
       ["task-child", "child", "build"],
       ["disabled", "disabled", "plan"],
     ]) {
-      const input = {}
-      const output = { label, messages: [message(sessionID, agent)] }
-      output.expectedInput = input
-      output.expectedOutput = output
-      await hooks["experimental.chat.messages.transform"](input, output)
+      const output = { messages: [message(sessionID, agent)] }
+      await hooks["experimental.chat.messages.transform"]({}, output)
+      transformed[label] = output.messages.some((item) => item.parts.some((part) => part.type === "text" && part.text.includes("EXTREMELY_IMPORTANT")))
     }
-    console.log(JSON.stringify({ transformed, references }))
-  `, { provisionDependencies: true })
+    console.log(JSON.stringify(transformed))
+  `, {
+    env: { OPENCODE_SUPERPOWERS_AGENTS: '["build"]' },
+    provisionDependencies: true,
+  })
 
   assert.deepEqual(JSON.parse(stdout), {
-    transformed: ["root", "task-child"],
-    references: [true, true],
-  })
-})
-
-test("reports a failing config hook without exposing staged mutations", async () => {
-  await assert.rejects(runIsolatedPlugin(`
-    const exported = (await import(PLUGIN_URL)).default
-    const plugin = exported.createForTesting({
-      skillsDir: () => new URL("./config/opencode/node_modules/superpowers/skills", import.meta.url).pathname,
-      upstreamPlugin: async () => ({
-        config: async (config) => {
-          config.staged = { visible: true }
-          throw new Error("fixture hook failure")
-        },
-        "experimental.chat.messages.transform": async () => {},
-      }),
-    })
-    const hooks = await plugin({}, { agents: [] })
-    const retained = { nested: true }
-    const config = { retained }
-    try {
-      await hooks.config(config)
-    } catch (error) {
-      console.log(JSON.stringify({ config, sameReference: config.retained === retained }))
-      console.error(error.message)
-      process.exitCode = 1
-    }
-  `, { provisionDependencies: true }), (error: NodeJS.ErrnoException & {
-    stdout?: string
-    stderr?: string
-  }) => {
-    assert.match(error.stderr ?? "", /fixture hook failure/)
-    assert.deepEqual(JSON.parse(error.stdout ?? ""), {
-      config: { retained: { nested: true } },
-      sameReference: true,
-    })
-    return true
+    root: true,
+    "task-child": true,
+    disabled: false,
   })
 })
 
