@@ -8,21 +8,12 @@
  * - его `experimental.chat.messages.transform` отвечает за сборку и injection
  *   оригинального Superpowers bootstrap;
  * - этот plugin добавляет только scope/access-control вокруг upstream hooks.
+ *
+ * Такое разделение не даёт wrapper-у разойтись с upstream workflow при
+ * обновлениях Superpowers и оставляет здесь только политику, которой upstream
+ * plugin не владеет: какие агенты получают skills и bootstrap.
  */
 
-/**
- * `import type` — TypeScript-only импорт.
- *
- * Эти символы нужны только компилятору/IDE для проверки типов. В итоговый
- * JavaScript такой import не попадает и никаких runtime-модулей сам по себе
- * не загружает.
- *
- * `Config`        — тип объединённой конфигурации OpenCode, которую plugin
- *                   может менять в `config` hook.
- * `Hooks`         — тип всех hook-ов, которые plugin может вернуть OpenCode.
- * `Plugin`        — сигнатура plugin factory-функции.
- * `PluginOptions` — тип произвольных options, переданных plugin из конфига.
- */
 import type {
   Config,
   Hooks,
@@ -36,38 +27,21 @@ import type {
 } from "@opencode-ai/sdk/v2"
 
 /**
- * Статически импортируем именно upstream OpenCode plugin из package
- * `superpowers` и используем его как обычную factory-функцию.
- *
- * Это НЕ означает, что upstream plugin автоматически зарегистрирован в
- * OpenCode. OpenCode запустил бы его глобально только если бы пользователь
- * отдельно указал `superpowers` в своём `plugin` config.
- *
- * Здесь же мы сами вызываем `UpstreamSuperpowersPlugin(input)`, получаем
- * объект hook-ов и затем сами решаем, какие из этих hook-ов и когда вызывать.
- * Благодаря этому wrapper делегирует оригинальный bootstrap только когда
- * хронологически последнее user message записано для enabled agent.
+ * Upstream импортируется как factory, а не регистрируется в OpenCode отдельно:
+ * wrapper должен контролировать вызов transform и не допускать глобальный
+ * bootstrap для агентов вне opt-in scope.
  *
  * Upstream package поставляется как JavaScript без подходящих TypeScript
  * declarations для этого export-а. `@ts-ignore` подавляет ошибку TypeScript
  * только для следующей строки; runtime-поведение импорта он не меняет.
  */
 // @ts-ignore
-import { SuperpowersPlugin as UpstreamSuperpowersPlugin } from "superpowers"
+import { SuperpowersPlugin } from "superpowers"
 
 /**
- * Встроенный Node.js filesystem API.
- *
- * `readFileSync(path, "utf8")`
- *   синхронно читает текстовый файл и возвращает string.
- *
- * `readdirSync(path, { withFileTypes: true })`
- *   читает содержимое директории и возвращает Dirent-объекты. Dirent позволяет
- *   узнать `isDirectory()` без дополнительного stat-вызова для каждого файла.
- *
  * Синхронные операции здесь осознанны: они выполняются при инициализации
- * plugin до регистрации hooks, объём каталога Superpowers мал, а код получается
- * значительно проще.
+ * plugin до регистрации hooks. Каталог Superpowers мал, поэтому более сложная
+ * async-координация не дала бы практической пользы на runtime request path.
  */
 import {
   readFileSync,
@@ -75,30 +49,25 @@ import {
 } from "node:fs"
 
 /**
- * `import.meta.resolve(specifier)` ниже возвращает URL модуля вида
- * `file:///.../package.json`, а filesystem API ждёт обычный путь
- * `/.../package.json`.
- *
- * `fileURLToPath` выполняет корректное преобразование file: URL -> path,
- * включая escaping и platform-specific особенности.
+ * Module resolver возвращает file: URL. Преобразуем его штатным API, а не
+ * вручную, чтобы escaping и platform-specific paths не ломали discovery.
  */
 import { fileURLToPath } from "node:url"
 
-/**
- * Встроенные helpers для filesystem paths.
- *
- * `dirname(path)`      — parent directory.
- * `join(a, b, ...)`    — собирает путь с правильным separator для платформы.
- */
 import {
   dirname,
   join,
 } from "node:path"
 
 
-/** Reserved name создаваемой или дополняемой Superpowers agent entry. */
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
+/**
+ * OpenCode регистрирует built-ins после plugin config hook, поэтому их
+ * отсутствие в `config.agent` не означает typo. Список фиксирует протестированный
+ * runtime-контракт и должен сверяться с интеграционным тестом при обновлении
+ * OpenCode.
+ */
 const BUILT_IN_AGENTS = new Set([
   "build",
   "plan",
@@ -119,24 +88,9 @@ const BUILT_IN_AGENTS = new Set([
  */
 const POLICY_SKILL = "using-superpowers"
 
-/**
- * String literal union в TypeScript — ближайший аналог enum с ровно тремя
- * допустимыми строковыми значениями, но без отдельного runtime enum-объекта.
- */
+/** Локальное имя следует официальному SDK-типу permission actions. */
 type Action = PermissionActionConfig
 
-/**
- * `Record<K, V>` — стандартный TypeScript utility type.
- *
- * Здесь это map:
- *   skill name -> OpenCode permission action
- *
- * Например:
- *   {
- *     "brainstorming": "deny",
- *     "systematic-debugging": "allow"
- *   }
- */
 type SkillPermissions = Record<string, Action>
 
 type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & {
@@ -149,37 +103,14 @@ type RuntimeConfig = Omit<Config, "permission" | "agent"> & {
 }
 
 /**
- * Получаем тип `messages` непосредственно из официального типа hook-а OpenCode,
- * чтобы не дублировать его структуру руками.
- *
- * Разбор выражения изнутри наружу:
- *
- * 1. `Hooks["experimental.chat.messages.transform"]`
- *    — тип конкретного hook-а. Он может быть optional, поэтому содержит
- *      `undefined`.
- *
- * 2. `NonNullable<...>`
- *    — TypeScript utility type, удаляет `null | undefined`.
- *
- * 3. `Parameters<FunctionType>`
- *    — превращает параметры функции в tuple type: `[arg0, arg1, ...]`.
- *
- * 4. `[1]`
- *    — берём второй аргумент transform hook (`output`).
- *
- * 5. `["messages"]`
- *    — тип его поля `messages`.
- *
- * Если OpenCode поменяет shape messages в своём API, TypeScript с большей
- * вероятностью покажет ошибку здесь, вместо того чтобы мы продолжили работать
- * с устаревшей собственной копией типа.
+ * Выводим тип messages из официального hook-а, чтобы изменение OpenCode API
+ * ломало typecheck, а не оставляло wrapper с незаметно устаревшей копией shape.
  */
 type Messages =
   Parameters<
     NonNullable<Hooks["experimental.chat.messages.transform"]>
   >[1]["messages"]
 
-/** Наш небольшой typed-view поверх произвольных PluginOptions OpenCode. */
 type Options = {
   agents: string[]
 }
@@ -195,13 +126,7 @@ const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
  * одних TypeScript типов здесь недостаточно.
  */
 function parseOptions(raw?: PluginOptions): Options {
-  /**
-   * `?.` — optional chaining: если `raw` равен null/undefined, выражение даёт
-   * undefined вместо exception.
-   *
-   * `??` — nullish coalescing: подставляет `[]` только для null/undefined,
-   * но не для других falsy-значений.
-   */
+  /** Отсутствующие options означают строгий opt-in без дополнительных agents. */
   const agents = raw?.agents ?? []
 
   if (
@@ -215,9 +140,8 @@ function parseOptions(raw?: PluginOptions): Options {
 
   return {
     /**
-     * `Set` автоматически убирает дубликаты; spread `...` снова превращает его
-     * в Array. `superpowers` удаляем из пользовательского списка, потому что
-     * его отдельная config entry управляется не allowlist-ом: non-disabled
+     * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
+     * из allowlist, поскольку его lifecycle должен уважать explicit disable:
      * entry дополняется (или создаётся), а disabled остаётся выключенной.
      */
     agents: [...new Set(agents.map((value) => value.trim()))]
@@ -267,21 +191,14 @@ function skillsDir(): string {
  * metadata `name` из самого SKILL.md, поэтому permissions должны строиться по
  * тому же значению.
  *
- * Полный YAML parser здесь пока не нужен: нам требуется единственное простое
- * scalar-поле `name`, поэтому достаточно двух regex.
+ * Полный YAML parser намеренно не добавляется: bundled skills ожидаются с
+ * простым однострочным `name`. Если upstream перейдёт на multiline или escaped
+ * YAML scalars, этот ограниченный parser потребуется заменить.
  */
 function skillName(file: string): string {
   const source = readFileSync(file, "utf8")
 
-  /**
-   * Первый regex выделяет только начальный YAML frontmatter между `---`.
-   * `\r?\n` поддерживает и Unix, и Windows line endings.
-   * `[\s\S]*?` — распространённый JS regex-приём для non-greedy match любого
-   * символа, включая newline.
-   *
-   * `?.[1]` — optional access к первой capture group; если match отсутствует,
-   * получаем undefined.
-   */
+  /** Не ищем `name` в body, чтобы содержимое skill не выдавало себя за metadata. */
   const frontmatter = source.match(
     /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/,
   )?.[1]
@@ -330,21 +247,15 @@ function discoverSkills(dir: string): DiscoveredSkill[] {
 
 type Dependencies = {
   skillsDir: () => string
-  upstreamPlugin: typeof UpstreamSuperpowersPlugin
+  upstreamPlugin: typeof SuperpowersPlugin
 }
 
 const dependencies: Dependencies = {
   skillsDir,
-  upstreamPlugin: UpstreamSuperpowersPlugin,
+  upstreamPlugin: SuperpowersPlugin,
 }
 
 
-/**
- * Строит OpenCode granular permission map для набора skills.
- *
- * `Object.fromEntries()` — стандартный JS API, обратный к `Object.entries()`:
- * принимает последовательность `[key, value]` и создаёт обычный JS object.
- */
 function permissions(
   skills: string[],
   action: Action,
@@ -360,7 +271,10 @@ function isAction(value: unknown): value is Action {
 }
 
 
-/** Приводит schema-valid top-level permission к object-форме для mutation. */
+/**
+ * Приводит scalar shorthand к map, потому что wrapper должен добавить owned
+ * skill rules, не потеряв действие пользователя для остальных permissions.
+ */
 function normalizePermission(
   current: unknown,
   location: string,
@@ -420,10 +334,8 @@ function mergePermissions(
           })()
 
   /**
-   * `Object.entries(existing)` превращает object в `[key, value][]`.
-   * Сначала удаляем keys, которые собираемся добавить сами, затем append-им
-   * generated entries. Это гарантирует не только новое значение, но и нужный
-   * insertion order ключа в результирующем object.
+   * Повторно добавляем owned keys в конец: одного присваивания недостаточно,
+   * потому что оно меняет value, но сохраняет прежнюю позицию ключа.
    */
   return Object.fromEntries([
     ...Object.entries(existing)
@@ -437,14 +349,14 @@ function mergePermissions(
  * Добавляет global deny для всех Superpowers skills.
  *
  * OpenCode API: `config.permission.skill`.
- * Global permissions наследуются агентами, поэтому нам не нужно обходить
- * `build`, `plan`, `general`, `explore` и произвольных пользовательских agents.
+ * Global deny задаёт baseline для всех агентов. Configured non-enabled agents
+ * дополнительно получают exact agent-level deny, потому что их локальные rules
+ * способны перекрыть этот baseline.
  */
 function denyGlobally(
   config: RuntimeConfig,
   denied: SkillPermissions,
 ): void {
-  /** Scalar shorthand нельзя мутировать, поэтому сначала нормализуем весь map. */
   config.permission = normalizePermission(config.permission, "permission")
   config.permission.skill =
     mergePermissions(config.permission.skill, denied)
@@ -463,10 +375,6 @@ function enableAgent(
   name: string,
   allowed: SkillPermissions,
 ): void {
-  /**
-   * `config.agent?.[name]` — optional chaining + computed property access.
-   * Эквивалентно безопасному lookup по динамическому ключу map/object.
-   */
   const agent = config.agent?.[name]
 
   if (!agent) {
@@ -493,6 +401,11 @@ function denyConfiguredAgents(
   enabledAgents: Set<string>,
   denied: SkillPermissions,
 ): void {
+  /**
+   * Локальный exact deny нужен даже при global baseline: agent-level wildcard
+   * может иметь более высокий precedence. Disabled entries не меняем, чтобы
+   * уважать явное отключение и не переписывать dormant configuration.
+   */
   for (const [name, agent] of Object.entries(config.agent ?? {})) {
     if (
       name === SUPERPOWERS_AGENT
@@ -525,6 +438,13 @@ function validateAgents(config: RuntimeConfig, names: string[]): void {
 }
 
 
+/**
+ * Config применяется транзакционно: upstream и wrapper сначала меняют clone,
+ * чтобы exception не оставлял live config в частично обновлённом состоянии.
+ * Перед первой mutation `commitConfig` проверяет все root descriptors, а
+ * reconciliation сохраняет ссылки на неизменившиеся nested values. Это важно
+ * для потребителей, уже удерживающих ссылки на части исходного config.
+ */
 function configEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true
   if (Array.isArray(left) || Array.isArray(right)) {
@@ -625,6 +545,12 @@ function configureSuperpowersAgent(
 
 type UserMessageInfo = Extract<Messages[number]["info"], { role: "user" }>
 
+/**
+ * Routing определяется последним user turn: именно его metadata фиксирует
+ * выбранного агента. На порядок массива не полагаемся, потому что OpenCode
+ * может передать переупорядоченную историю; ID служит только детерминированным
+ * tie-breaker при одинаковом timestamp.
+ */
 function latestUser(messages: Messages): UserMessageInfo | undefined {
   let latest: UserMessageInfo | undefined
 
@@ -644,20 +570,9 @@ function latestUser(messages: Messages): UserMessageInfo | undefined {
 
 
 /**
- * Главная plugin factory-функция OpenCode.
- *
- * OpenCode вызывает её один раз при загрузке plugin и передаёт:
- *
- * `input`
- *   runtime context OpenCode plugin (client, directory и т.п.). Мы передаём
- *   тот же объект upstream Superpowers plugin, чтобы он инициализировался так,
- *   как если бы OpenCode загрузил его напрямую.
- *
- * `rawOptions`
- *   options из записи plugin в OpenCode config.
- *
- * Результат функции — object hook-ов, которые OpenCode затем вызывает на
- * соответствующих стадиях lifecycle.
+ * Factory принимает injectable dependencies, чтобы contract failures можно
+ * было тестировать без регистрации второго runtime plugin. Тот же `input`
+ * передаётся upstream, иначе он инициализировался бы в отличающемся контексте.
  */
 function createSuperpowersAgentPlugin(
   overrides: Partial<Dependencies> = {},
@@ -741,7 +656,6 @@ function createSuperpowersAgentPlugin(
     )
   }
 
-  /** Все upstream skills кроме policy являются обычными capabilities. */
   const capabilities =
     uniqueSkills.filter((name) => name !== POLICY_SKILL)
 
@@ -772,7 +686,11 @@ function createSuperpowersAgentPlugin(
     const runtimeConfig = config as RuntimeConfig
     const draft = structuredClone(runtimeConfig)
 
-    /** Absent built-ins are valid allowlist targets before OpenCode registers them. */
+    /**
+     * Проверяем исходную конфигурацию до upstream mutation: agents, побочно
+     * созданные upstream, не считаются пользовательским opt-in. Built-ins
+     * допускаются отдельно, поскольку OpenCode зарегистрирует их позднее.
+     */
     validateAgents(draft, options.agents)
 
     /**
@@ -783,16 +701,18 @@ function createSuperpowersAgentPlugin(
      */
     await upstream.config(draft as Config)
 
-    /** После upstream config накладываем наш access-control. */
+    /**
+     * Накладываем access-control после upstream, чтобы wrapper имел последнее
+     * слово по owned skill permissions независимо от добавленных upstream rules.
+     */
     denyGlobally(draft, denied)
 
     const explicitlyEnabled = new Set(options.agents)
     denyConfiguredAgents(draft, explicitlyEnabled, denied)
 
     /**
-     * Перебираем explicit allowlist пользователя. Configured agents вне него
-     * получают собственные exact deny, чтобы agent-level wildcard/exact rules
-     * не могли перекрыть global baseline.
+     * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
+     * global deny только для explicit opt-in, а не расширяли общий baseline.
      */
     for (const agent of options.agents) {
       draft.agent ??= {}
@@ -800,7 +720,10 @@ function createSuperpowersAgentPlugin(
       enableAgent(draft, agent, enabled)
     }
 
-    /** Готовим bootstrap allowlist, публикуемый только после успешного commit. */
+    /**
+     * Не публикуем bootstrap scope до commit: transform не должен делегировать
+     * upstream для конфигурации, которая не смогла установиться.
+     */
     const nextEnabledAgents = new Set(options.agents)
     if (configureSuperpowersAgent(draft, enabled)) {
       nextEnabledAgents.add(SUPERPOWERS_AGENT)
@@ -812,19 +735,12 @@ function createSuperpowersAgentPlugin(
   }
 
   return {
-    /**
-     * OpenCode `config` hook вызывается во время построения runtime config.
-     * Callback мутирует переданный `config` object in-place.
-     */
     config: configHook,
 
     /**
-     * Experimental OpenCode hook вызывается непосредственно перед model call и
-     * позволяет изменить набор сообщений, отправляемых модели.
-     *
-      * Сам bootstrap мы не строим и не копируем: если agent хронологически
-      * последнего user message разрешён, вызываем оригинальный upstream
-      * transform.
+     * Не копируем bootstrap: делегирование upstream сохраняет его policy,
+     * tool mapping и duplicate protection. Wrapper отвечает только за gate по
+     * агенту последнего user turn.
      */
     "experimental.chat.messages.transform":
       async (hookInput, output) => {
@@ -852,6 +768,11 @@ type AutoDiscoveredPlugin = Plugin & {
   createForTesting: typeof createSuperpowersAgentPlugin
 }
 
+/**
+ * Auto-discovery не передаёт tuple options, поэтому allowlist фиксируется из
+ * environment при загрузке модуля. Изменение environment требует restart;
+ * `createForTesting` даёт тестам injectable factory без второй регистрации.
+ */
 const autoDiscoveredOptions = environmentOptions(
   process.env[AGENTS_ENV],
 )
