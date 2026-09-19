@@ -31,7 +31,7 @@ npm install --prefix "$HOME/.config/opencode" --save-exact \
 
 The pinned release above matches this repository's tested environment. Other releases are accepted when they provide the required plugin hooks and valid skill assets. A missing or structurally incompatible dependency fails plugin initialization visibly.
 
-The generated `superpowers` primary agent is enabled by default. Explicit registration accepts an `agents` array as shown above. With either loading mode, `OPENCODE_SUPERPOWERS_AGENTS` can supply the array before OpenCode starts:
+The generated `superpowers` primary agent is enabled by default. Explicit registration accepts an `agents` array as shown above. With either loading mode, `OPENCODE_SUPERPOWERS_AGENTS` can supply a comma-separated list before OpenCode starts:
 
 ```json
 {
@@ -41,17 +41,17 @@ The generated `superpowers` primary agent is enabled by default. Explicit regist
 ```
 
 ```sh
-OPENCODE_SUPERPOWERS_AGENTS='["build","reviewer"]'
+OPENCODE_SUPERPOWERS_AGENTS='build,reviewer'
 export OPENCODE_SUPERPOWERS_AGENTS
 ```
 
-Whitespace is trimmed, duplicate names are removed, and `superpowers` is implicit. The value must be valid JSON containing only non-empty strings. Only agents already present in the merged `agent` config are enabled; missing or explicitly disabled names are ignored. To enable a built-in, add an override for it to `agent` because OpenCode materializes built-ins after plugin config hooks.
+Whitespace around names is trimmed, repeated names have no additional effect, and `superpowers` is implicit. This is a plain comma-separated format without quoted or escaped fields. Every field must contain a name after trimming; leading, trailing, or repeated commas and whitespace-only fields are invalid. Only agents already present in the merged `agent` config are enabled; missing or explicitly disabled names are ignored. To enable a built-in, add an override for it to `agent` because OpenCode materializes built-ins after plugin config hooks.
 
-When `OPENCODE_SUPERPOWERS_AGENTS` is defined, it replaces the explicit plugin `agents` option; the two lists are never merged. An absent environment variable falls back to plugin options, while an explicit `[]` enables no additional agents.
+When `OPENCODE_SUPERPOWERS_AGENTS` is defined, it replaces the explicit plugin `agents` option; the two lists are never merged. An absent environment variable falls back to plugin options, while an explicit empty string enables no additional agents.
 
-Malformed JSON, a non-array, a non-string item, or a blank item writes a `superpowers-agent` warning to the OpenCode log and disables additional agents. The generated `superpowers` agent remains available. OpenCode logs are stored under `~/.local/share/opencode/log/` on Linux and macOS and can also be printed with `opencode --print-logs`.
+An invalid empty CSV field writes a `superpowers-agent` warning to the OpenCode log and disables all additional agents without falling back to plugin options. The generated `superpowers` agent remains available. OpenCode logs are stored under `~/.local/share/opencode/log/` on Linux and macOS and can also be printed with `opencode --print-logs`.
 
-If the installed Superpowers release is structurally incompatible or its skill assets are invalid, the wrapper logs an error and disables itself without preventing OpenCode from starting. A config-hook failure is also logged and its staged changes are discarded.
+If the installed Superpowers release lacks the required hooks, has no discoverable named skills, or lacks a valid `using-superpowers` policy skill, the wrapper logs an error and disables itself without preventing OpenCode from starting. A config-hook failure is also logged and its staged changes are discarded.
 
 ### Agents And Permissions
 
@@ -59,9 +59,9 @@ The wrapper discovers the bundled Superpowers `SKILL.md` files and owns the exac
 
 Configured built-in and custom agents may be allowlisted. Missing and explicitly disabled agents are ignored. An existing `agent.superpowers` is augmented rather than replaced: its model, prompt, mode, description, permissions, and other settings are retained, missing `mode` and `description` default to `primary` and `OpenCode with the full Superpowers workflow`, and its skill rules are generated as above. With no explicit model it inherits normal OpenCode model configuration. Set `agent.superpowers.disable: true` to keep that entry untouched and suppress its bootstrap.
 
-OpenCode permissions identify a skill by frontmatter `name`, not source path. A project or personal skill with the same name as a bundled Superpowers skill therefore shares the generated rule, and OpenCode only reports an ambiguous duplicate. Rename the external skill's frontmatter name (and directory), or remove its discovery path; discovery order is not a safe remediation. Duplicate names inside the bundled package, missing/malformed skills, or a missing `using-superpowers` policy fail initialization.
+OpenCode permissions identify a skill by frontmatter `name`, not source path. A project or personal skill with the same name as a bundled Superpowers skill therefore shares the generated rule, and OpenCode only reports an ambiguous duplicate. Rename the external skill's frontmatter name (and directory), or remove its discovery path; discovery order is not a safe remediation. Wrapper initialization fails only when no named bundled skills can be discovered or when a valid `using-superpowers` policy skill is absent.
 
-Bootstrap routing follows the agent on the chronologically latest user message, using the message ID as a deterministic tie-breaker when timestamps match. Every transform invocation for an enabled agent delegates to the unchanged upstream bootstrap, whether the agent is primary, a directly selected subagent, task-dispatched, or an explicitly allowlisted internal agent name. The upstream `<SUBAGENT-STOP>` block remains present and controls any model-facing behavior for dispatched subagents.
+Bootstrap routing follows the agent on the chronologically latest user message, using the message ID as a deterministic tie-breaker when timestamps match. Every transform invocation whose latest user-message agent is enabled delegates to the unchanged upstream bootstrap. The wrapper uses message metadata only and does not infer a session or dispatch type.
 
 Histories without a user message, or whose latest user-message agent is not enabled, do not delegate. Upstream retains ownership of bootstrap content, caching, and duplicate protection. The config hook stages upstream and wrapper changes and commits them atomically; invalid configuration or an upstream failure exposes none of the staged config mutations. OpenCode may continue after reporting a plugin failure, so treat any `[superpowers-agent]` startup error as a disabled integration and fix it before use.
 
@@ -74,7 +74,7 @@ opencode debug agent build
 opencode debug skill --print-logs --log-level WARN
 ```
 
-`debug config` should list one plugin ending in `/plugins/superpowers-agent.ts`. `debug agent` validates built-in or custom agent registration; `debug skill` surfaces duplicate skill names. These commands are registration and diagnostic checks, not evidence that bootstrap hooks ran. Bootstrap routing is covered by hook-level unit and isolated integration tests, not provider-backed end-to-end tests.
+`debug config` should list one plugin ending in `/plugins/superpowers-agent.ts`. `debug agent` validates built-in or custom agent registration; `debug skill` surfaces duplicate skill names. These commands are registration and diagnostic checks, not evidence that bootstrap hooks ran. Bootstrap routing is covered by hook-level component tests and an installed-copy subprocess smoke test, not provider-backed or task-dispatch end-to-end tests.
 
 ## Configuration layers
 

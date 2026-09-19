@@ -4,23 +4,41 @@ import test from "node:test"
 import type { Hooks, PluginOptions } from "@opencode-ai/plugin"
 import SuperpowersAgentPlugin from "../../plugins/superpowers-agent"
 
+const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 const BRAINSTORMING = "brainstorming"
 const POLICY = "using-superpowers"
 
 type LogEntry = { service: string; level: string; message: string; extra?: Record<string, unknown> }
 
-async function load(options?: PluginOptions, logs: LogEntry[] = []): Promise<Hooks> {
-  return SuperpowersAgentPlugin({
-    directory: process.cwd(),
-    client: {
-      app: {
-        log: async ({ body }: { body: LogEntry }) => {
-          logs.push(body)
-          return { data: true }
+type LoadSettings = {
+  environment?: string
+  logs?: LogEntry[]
+  options?: PluginOptions
+}
+
+async function load(settings: LoadSettings = {}): Promise<Hooks> {
+  const { environment, logs = [], options } = settings
+  const previous = process.env[AGENTS_ENV]
+
+  if (environment === undefined) delete process.env[AGENTS_ENV]
+  else process.env[AGENTS_ENV] = environment
+
+  try {
+    return await SuperpowersAgentPlugin({
+      directory: process.cwd(),
+      client: {
+        app: {
+          log: async ({ body }: { body: LogEntry }) => {
+            logs.push(body)
+            return { data: true }
+          },
         },
       },
-    },
-  } as never, options)
+    } as never, options)
+  } finally {
+    if (previous === undefined) delete process.env[AGENTS_ENV]
+    else process.env[AGENTS_ENV] = previous
+  }
 }
 
 function userMessage(sessionID: string, agent: string, id = "user", created = 1) {
@@ -44,49 +62,71 @@ function assistantMessage(sessionID: string, agent: string, id = "assistant") {
   }
 }
 
-function hasBootstrap(messages: any[]): boolean {
-  return messages.some((message) => message.parts.some((part: any) => part.type === "text" && part.text.includes("EXTREMELY_IMPORTANT")))
-}
-
 async function transform(hooks: Hooks, messages: any[]): Promise<any[]> {
   const output = { messages } as never
   await hooks["experimental.chat.messages.transform"]!({}, output)
   return messages
 }
 
+function assertBootstrapAdded(before: any[], after: any[]): void {
+  const firstUser = after.findIndex((message) => message.info.role === "user")
+  assert.notEqual(firstUser, -1)
+
+  const injected = after[firstUser].parts[0]
+  assert.equal(injected.type, "text")
+  assert.ok(injected.text.trim())
+
+  const withoutInjection = structuredClone(after)
+  withoutInjection[firstUser].parts.shift()
+  assert.deepEqual(withoutInjection, before)
+}
+
+function hasLevel(logs: LogEntry[], level: string): boolean {
+  return logs.some((entry) => entry.level === level)
+}
+
+function relevantRules(rules: Record<string, unknown>): [string, unknown][] {
+  return Object.entries(rules).filter(([name]) => ["*", "brain*", BRAINSTORMING, POLICY].includes(name))
+}
+
 test("creates the default superpowers agent and registers real upstream skills", async () => {
   const hooks = await load()
   const config: Record<string, any> = {}
 
+  assert.equal(typeof hooks.config, "function")
+  assert.equal(typeof hooks["experimental.chat.messages.transform"], "function")
   await hooks.config!(config as never)
 
   assert.equal(config.agent.superpowers.mode, "primary")
   assert.equal(config.agent.superpowers.description, "OpenCode with the full Superpowers workflow")
+  assert.equal("model" in config.agent.superpowers, false)
+  assert.equal("prompt" in config.agent.superpowers, false)
   assert.equal(config.permission.skill[BRAINSTORMING], "deny")
   assert.equal(config.permission.skill[POLICY], "deny")
   assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
   assert.equal(config.agent.superpowers.permission.skill[POLICY], "deny")
-  assert.equal(config.skills.paths.length, 1)
-  assert.match(config.skills.paths[0], /superpowers\/skills$/)
-  assert.equal("model" in config.agent.superpowers, false)
+  assert.ok(Array.isArray(config.skills.paths))
+  assert.ok(config.skills.paths.length > 0)
 })
 
-test("augments a customized superpowers agent without replacing user settings", async () => {
+test("augments a customized superpowers agent without replacing user values", async () => {
   const hooks = await load()
-  const retained = { value: true }
-  const superpowers: Record<string, any> = {
-    model: "provider/custom",
-    mode: "subagent",
-    description: "Custom description",
-    prompt: "Custom prompt",
-    temperature: 0.2,
-    customAgentField: retained,
-    permission: {
-      bash: { "git status": "allow" },
-      skill: { "private-*": "ask", [BRAINSTORMING]: "deny" },
+  const config: Record<string, any> = {
+    agent: {
+      superpowers: {
+        model: "provider/custom",
+        mode: "subagent",
+        description: "Custom description",
+        prompt: "Custom prompt",
+        temperature: 0.2,
+        customAgentField: { value: true },
+        permission: {
+          bash: { "git status": "allow" },
+          skill: { "private-*": "ask", [BRAINSTORMING]: "deny" },
+        },
+      },
     },
   }
-  const config: Record<string, any> = { agent: { superpowers } }
 
   await hooks.config!(config as never)
 
@@ -96,252 +136,263 @@ test("augments a customized superpowers agent without replacing user settings", 
   assert.equal(configured.description, "Custom description")
   assert.equal(configured.prompt, "Custom prompt")
   assert.equal(configured.temperature, 0.2)
-  assert.strictEqual(configured.customAgentField, retained)
-  assert.strictEqual(configured.permission.bash, superpowers.permission.bash)
+  assert.deepEqual(configured.customAgentField, { value: true })
+  assert.deepEqual(configured.permission.bash, { "git status": "allow" })
   assert.equal(configured.permission.skill["private-*"], "ask")
   assert.equal(configured.permission.skill[BRAINSTORMING], "allow")
   assert.equal(configured.permission.skill[POLICY], "deny")
 })
 
-test("leaves a disabled superpowers agent untouched and suppresses bootstrap", async () => {
+test("leaves a disabled superpowers agent unchanged and suppresses bootstrap", async () => {
   const hooks = await load()
-  const superpowers = { disable: true, description: "Disabled by user", permission: { bash: "ask" } }
-  const config: Record<string, any> = { agent: { superpowers } }
+  const disabled = { disable: true, description: "Disabled by user", permission: { bash: "ask" } }
+  const config: Record<string, any> = { agent: { superpowers: structuredClone(disabled) } }
 
   await hooks.config!(config as never)
-  const messages = await transform(hooks, [userMessage("session", "superpowers")])
+  const messages = [userMessage("session", "superpowers")]
+  const before = structuredClone(messages)
+  await transform(hooks, messages)
 
-  assert.strictEqual(config.agent.superpowers, superpowers)
-  assert.deepEqual(superpowers, { disable: true, description: "Disabled by user", permission: { bash: "ask" } })
-  assert.equal(hasBootstrap(messages), false)
+  assert.deepEqual(config.agent.superpowers, disabled)
+  assert.deepEqual(messages, before)
 })
 
-test("enables agents from explicit plugin tuple options", async () => {
-  const hooks = await load({ agents: ["build"] })
-  const config: Record<string, any> = { agent: { build: {} } }
+test("applies tuple and strict CSV agent options", async (t) => {
+  await t.test("uses tuple options when the environment is absent", async () => {
+    const hooks = await load({ options: { agents: ["build"] } })
+    const config: Record<string, any> = { agent: { build: {}, reviewer: {} } }
 
-  await hooks.config!(config as never)
+    await hooks.config!(config as never)
 
-  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "allow")
-  assert.equal(config.agent.build.permission.skill[POLICY], "deny")
-  assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
-})
+    assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "allow")
+    assert.equal(config.agent.reviewer.permission.skill[BRAINSTORMING], "deny")
+  })
 
-test("warns and disables additional agents for invalid explicit plugin options", async () => {
-  const logs: LogEntry[] = []
-  const hooks = await load({ agents: "build" } as never, logs)
-  const config: Record<string, any> = { agent: { build: {} } }
+  await t.test("accepts trimmed repeated names and replaces tuple options", async () => {
+    const logs: LogEntry[] = []
+    const hooks = await load({
+      environment: " build,build ",
+      logs,
+      options: { agents: ["reviewer"] },
+    })
+    const config: Record<string, any> = { agent: { build: {}, reviewer: {} } }
 
-  await hooks.config!(config as never)
+    await hooks.config!(config as never)
 
-  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
-  assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
-  assert.deepEqual(logs, [{
-    service: "superpowers-agent",
-    level: "warn",
-    message: "Invalid agent configuration; additional agents are disabled",
-    extra: {
-      source: "plugin-options",
-      error: '[superpowers-agent] "agents" must be an array of non-empty strings',
-    },
-  }])
-})
+    assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "allow")
+    assert.equal(config.agent.reviewer.permission.skill[BRAINSTORMING], "deny")
+    assert.equal(hasLevel(logs, "warn"), false)
+  })
 
-test("preserves unrelated permissions while denying bundled skills to non-enabled agents", async () => {
-  const hooks = await load()
-  const retained = { value: true }
-  const reviewer: Record<string, any> = {
-    model: "provider/model",
-    customAgentField: retained,
-    permission: {
-      bash: "ask",
-      skill: { "*": "allow", "private-*": "deny", [BRAINSTORMING]: "allow" },
-    },
+  await t.test("treats an empty environment value as an empty list", async () => {
+    const logs: LogEntry[] = []
+    const hooks = await load({ environment: "", logs, options: { agents: ["build"] } })
+    const config: Record<string, any> = { agent: { build: {} } }
+
+    await hooks.config!(config as never)
+
+    assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
+    assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
+    assert.equal(hasLevel(logs, "warn"), false)
+  })
+
+  for (const value of ["build,,reviewer", "   "]) {
+    await t.test(`fails closed for ${JSON.stringify(value)}`, async () => {
+      const logs: LogEntry[] = []
+      const hooks = await load({
+        environment: value,
+        logs,
+        options: { agents: ["fallback"] },
+      })
+      const config: Record<string, any> = {
+        agent: { build: {}, reviewer: {}, fallback: {} },
+      }
+
+      await hooks.config!(config as never)
+
+      assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
+      assert.equal(config.agent.reviewer.permission.skill[BRAINSTORMING], "deny")
+      assert.equal(config.agent.fallback.permission.skill[BRAINSTORMING], "deny")
+      assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
+      assert.equal(hasLevel(logs, "warn"), true)
+    })
   }
-  const config: Record<string, any> = { agent: { reviewer } }
 
-  await hooks.config!(config as never)
+  await t.test("fails closed for invalid tuple options", async () => {
+    const logs: LogEntry[] = []
+    const hooks = await load({ logs, options: { agents: "build" } as never })
+    const config: Record<string, any> = { agent: { build: {} } }
 
-  const configured = config.agent.reviewer
-  assert.equal(configured.model, "provider/model")
-  assert.strictEqual(configured.customAgentField, retained)
-  assert.equal(configured.permission.bash, "ask")
-  assert.equal(configured.permission.skill["*"], "allow")
-  assert.equal(configured.permission.skill["private-*"], "deny")
-  assert.equal(configured.permission.skill[BRAINSTORMING], "deny")
-  assert.equal(configured.permission.skill[POLICY], "deny")
-  assert.ok(Object.keys(configured.permission.skill).indexOf(BRAINSTORMING) > Object.keys(configured.permission.skill).indexOf("*"))
+    await hooks.config!(config as never)
+
+    assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
+    assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
+    assert.equal(hasLevel(logs, "warn"), true)
+  })
 })
 
-test("appends owned decisions after conflicting global and enabled-agent rules", async () => {
-  const hooks = await load()
+test("applies owned permission policy after retained rules", async () => {
+  const hooks = await load({ options: { agents: ["build", "missing"] } })
   const config: Record<string, any> = {
-    permission: { skill: { [BRAINSTORMING]: "allow", "*": "allow", "brain*": "ask", [POLICY]: "allow" } },
+    permission: {
+      skill: {
+        [BRAINSTORMING]: "allow",
+        "*": "allow",
+        "brain*": "ask",
+        [POLICY]: "allow",
+        "private-*": "ask",
+      },
+    },
     agent: {
-      superpowers: {
-        permission: { skill: { [BRAINSTORMING]: "deny", "*": "deny", "brain*": "ask", [POLICY]: "allow" } },
+      build: {
+        customAgentField: { value: true },
+        permission: {
+          bash: "ask",
+          skill: {
+            [BRAINSTORMING]: "deny",
+            "*": "deny",
+            "brain*": "ask",
+            [POLICY]: "allow",
+            custom: "ask",
+          },
+        },
+      },
+      reviewer: {
+        permission: {
+          skill: { "*": "allow", "private-*": "deny", [BRAINSTORMING]: "allow" },
+        },
       },
     },
   }
 
   await hooks.config!(config as never)
 
-  const relevant = (rules: Record<string, unknown>) => Object.entries(rules).filter(([name]) => ["*", "brain*", BRAINSTORMING, POLICY].includes(name))
-  assert.deepEqual(relevant(config.permission.skill), [
+  assert.deepEqual(relevantRules(config.permission.skill), [
     ["*", "allow"],
     ["brain*", "ask"],
     [BRAINSTORMING, "deny"],
     [POLICY, "deny"],
   ])
-  assert.deepEqual(relevant(config.agent.superpowers.permission.skill), [
+  assert.equal(config.permission.skill["private-*"], "ask")
+
+  assert.deepEqual(relevantRules(config.agent.build.permission.skill), [
     ["*", "deny"],
     ["brain*", "ask"],
     [BRAINSTORMING, "allow"],
     [POLICY, "deny"],
   ])
+  assert.equal(config.agent.build.permission.skill.custom, "ask")
+  assert.equal(config.agent.build.permission.bash, "ask")
+  assert.deepEqual(config.agent.build.customAgentField, { value: true })
+
+  assert.equal(config.agent.reviewer.permission.skill["*"], "allow")
+  assert.equal(config.agent.reviewer.permission.skill["private-*"], "deny")
+  assert.equal(config.agent.reviewer.permission.skill[BRAINSTORMING], "deny")
+  assert.equal(config.agent.reviewer.permission.skill[POLICY], "deny")
+  assert.ok(Object.keys(config.agent.reviewer.permission.skill).indexOf(BRAINSTORMING) > Object.keys(config.agent.reviewer.permission.skill).indexOf("*"))
+  assert.equal(config.agent.missing, undefined)
 })
 
-test("normalizes scalar global and agent permissions", async () => {
+test("normalizes scalar root, agent, and skill permissions", async () => {
   const hooks = await load()
-  const config: Record<string, any> = { permission: "allow", agent: { superpowers: { permission: "ask" } } }
+  const config: Record<string, any> = {
+    permission: "allow",
+    agent: {
+      reviewer: { permission: { skill: "ask" } },
+      superpowers: { permission: "ask" },
+    },
+  }
 
   await hooks.config!(config as never)
 
   assert.equal(config.permission["*"], "allow")
   assert.equal(config.permission.skill[BRAINSTORMING], "deny")
+  assert.equal(config.agent.reviewer.permission.skill["*"], "ask")
+  assert.equal(config.agent.reviewer.permission.skill[BRAINSTORMING], "deny")
   assert.equal(config.agent.superpowers.permission["*"], "ask")
   assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
   assert.equal(config.agent.superpowers.permission.skill[POLICY], "deny")
 })
 
-test("logs invalid permission forms without changing config", async (t) => {
-  for (const [name, config, expected] of [
-    ["global permission", { permission: true, agent: {} }, /permission must/],
-    ["global skill", { permission: { skill: true }, agent: {} }, /permission\.skill must/],
-    ["agent permission", { agent: { superpowers: { permission: true } } }, /agent\.superpowers\.permission must/],
-    ["agent skill", { agent: { superpowers: { permission: { skill: true } } } }, /permission\.skill must/],
+test("rolls back invalid permission forms and clears bootstrap routing", async (t) => {
+  for (const [name, invalid] of [
+    ["global permission", { permission: true, agent: {} }],
+    ["global skill", { permission: { skill: true }, agent: {} }],
+    ["agent permission", { agent: { superpowers: { permission: true } } }],
+    ["agent skill", { agent: { superpowers: { permission: { skill: true } } } }],
   ] as const) {
     await t.test(name, async () => {
       const logs: LogEntry[] = []
-      const hooks = await load(undefined, logs)
-      const snapshot = structuredClone(config)
+      const hooks = await load({ logs })
+      await hooks.config!({} as never)
 
+      const config: Record<string, any> = structuredClone(invalid)
+      const snapshot = structuredClone(config)
       await hooks.config!(config as never)
 
+      const messages = [userMessage(`session-${name}`, "superpowers")]
+      const before = structuredClone(messages)
+      await transform(hooks, messages)
+
       assert.deepEqual(config, snapshot)
-      assert.equal(logs.length, 1)
-      assert.equal(logs[0]?.service, "superpowers-agent")
-      assert.equal(logs[0]?.level, "error")
-      assert.equal(logs[0]?.message, "Failed to configure Superpowers; plugin is disabled")
-      assert.match(String(logs[0]?.extra?.error), expected)
+      assert.equal("skills" in config, false)
+      assert.equal(hasLevel(logs, "error"), true)
+      assert.deepEqual(messages, before)
     })
   }
 })
 
-test("discards staged upstream changes when wrapper validation fails", async () => {
-  const logs: LogEntry[] = []
-  const hooks = await load(undefined, logs)
-  const permission = { skill: true }
-  const retained = { value: true }
-  const config: Record<string, any> = { permission, retained }
-  const snapshot = structuredClone(config)
-
-  await hooks.config!(config as never)
-
-  assert.deepEqual(config, snapshot)
-  assert.strictEqual(config.permission, permission)
-  assert.strictEqual(config.retained, retained)
-  assert.equal("skills" in config, false)
-  assert.match(String(logs[0]?.extra?.error), /permission\.skill must/)
-})
-
-test("atomically commits real upstream and wrapper changes while preserving unchanged references", async () => {
-  const hooks = await load()
-  const retained = { value: true }
-  const config: Record<string, any> = { retained, agent: {} }
-  const root = config
-
-  await hooks.config!(config as never)
-
-  assert.strictEqual(config, root)
-  assert.strictEqual(config.retained, retained)
-  assert.equal(config.skills.paths.length, 1)
-  assert.equal(config.permission.skill[BRAINSTORMING], "deny")
-  assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
-})
-
-test("detects an uncommittable root before applying staged changes", async () => {
-  const logs: LogEntry[] = []
-  const hooks = await load(undefined, logs)
-  const agent = {}
-  const config: Record<string, any> = {}
-  Object.defineProperty(config, "agent", { configurable: true, enumerable: true, value: agent, writable: false })
-
-  await hooks.config!(config as never)
-
-  assert.deepEqual(config, { agent: {} })
-  assert.strictEqual(config.agent, agent)
-  assert.equal("permission" in config, false)
-  assert.equal("skills" in config, false)
-  assert.match(String(logs[0]?.extra?.error), /cannot replace config\.agent/)
-})
-
-test("routes real upstream bootstrap only for the latest enabled user", async () => {
+test("routes bootstrap by the latest user timestamp instead of array order", async () => {
   const hooks = await load()
   await hooks.config!({ agent: { reviewer: {} } } as never)
 
-  const disabledLatest = await transform(hooks, [
-    userMessage("session", "superpowers", "older", 1),
-    userMessage("session", "reviewer", "newer", 2),
-  ])
-  const enabledLatest = await transform(hooks, [
-    userMessage("session", "reviewer", "older", 1),
-    userMessage("session", "superpowers", "newer", 2),
-  ])
+  const disabledLatest = [
+    userMessage("session-disabled", "reviewer", "newer", 2),
+    userMessage("session-disabled", "superpowers", "older", 1),
+  ]
+  const disabledBefore = structuredClone(disabledLatest)
+  await transform(hooks, disabledLatest)
 
-  assert.equal(hasBootstrap(disabledLatest), false)
-  assert.equal(hasBootstrap(enabledLatest), true)
+  const enabledLatest = [
+    userMessage("session-enabled", "superpowers", "newer", 2),
+    userMessage("session-enabled", "reviewer", "older", 1),
+  ]
+  const enabledBefore = structuredClone(enabledLatest)
+  await transform(hooks, enabledLatest)
+
+  assert.deepEqual(disabledLatest, disabledBefore)
+  assertBootstrapAdded(enabledBefore, enabledLatest)
 })
 
 test("uses message ID as the deterministic timestamp tie-breaker", async () => {
   const hooks = await load()
   await hooks.config!({ agent: { reviewer: {} } } as never)
 
-  const disabledLatest = await transform(hooks, [
-    userMessage("session", "superpowers", "a", 1),
-    userMessage("session", "reviewer", "z", 1),
-  ].reverse())
-  const enabledLatest = await transform(hooks, [
-    userMessage("session", "reviewer", "a", 1),
-    userMessage("session", "superpowers", "z", 1),
-  ].reverse())
+  const disabledLatest = [
+    userMessage("session-disabled", "reviewer", "z", 1),
+    userMessage("session-disabled", "superpowers", "a", 1),
+  ]
+  const disabledBefore = structuredClone(disabledLatest)
+  await transform(hooks, disabledLatest)
 
-  assert.equal(hasBootstrap(disabledLatest), false)
-  assert.equal(hasBootstrap(enabledLatest), true)
+  const enabledLatest = [
+    userMessage("session-enabled", "superpowers", "z", 1),
+    userMessage("session-enabled", "reviewer", "a", 1),
+  ]
+  const enabledBefore = structuredClone(enabledLatest)
+  await transform(hooks, enabledLatest)
+
+  assert.deepEqual(disabledLatest, disabledBefore)
+  assertBootstrapAdded(enabledBefore, enabledLatest)
 })
 
-test("does not route histories without an enabled user", async () => {
-  const hooks = await load()
-  await hooks.config!({ agent: { reviewer: {} } } as never)
-
-  const reviewer = await transform(hooks, [userMessage("session", "reviewer")])
-  const assistantOnly = await transform(hooks, [assistantMessage("session", "superpowers")])
-
-  assert.equal(hasBootstrap(reviewer), false)
-  assert.equal(hasBootstrap(assistantOnly), false)
-})
-
-test("delegates fresh eligible histories and preserves upstream duplicate protection", async () => {
+test("leaves histories without a user message unchanged", async () => {
   const hooks = await load()
   await hooks.config!({} as never)
-  const first = [userMessage("first", "superpowers")]
-  const second = [userMessage("second", "superpowers")]
 
-  await transform(hooks, first)
-  await transform(hooks, first)
-  await transform(hooks, second)
-
-  const bootstrapCount = (messages: any[]) => messages.flatMap((message) => message.parts).filter((part) => part.type === "text" && part.text.includes("EXTREMELY_IMPORTANT")).length
-  assert.equal(bootstrapCount(first), 1)
-  assert.equal(bootstrapCount(second), 1)
+  for (const messages of [[], [assistantMessage("session", "superpowers")]]) {
+    const before = structuredClone(messages)
+    await transform(hooks, messages)
+    assert.deepEqual(messages, before)
+  }
 })

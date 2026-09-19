@@ -88,130 +88,154 @@ class Logger {
     this.client = client
   }
 
-  debug(message: string, extra?: LogExtra) {
-    return this.log("debug", message, extra)
+  debug(message: string, error?: unknown, extra?: LogExtra) {
+    return this.log("debug", message, error, extra)
   }
 
-  info(message: string, extra?: LogExtra) {
-    return this.log("info", message, extra)
+  info(message: string, error?: unknown, extra?: LogExtra) {
+    return this.log("info", message, error, extra)
   }
 
-  warn(message: string, extra?: LogExtra) {
-    return this.log("warn", message, extra)
+  warn(message: string, error?: unknown, extra?: LogExtra) {
+    return this.log("warn", message, error, extra)
   }
 
-  error(message: string, extra?: LogExtra) {
-    return this.log("error", message, extra)
+  error(message: string, error?: unknown, extra?: LogExtra) {
+    return this.log("error", message, error, extra)
   }
 
-  private log(level: "debug" | "info" | "error" | "warn", message: string, extra?: LogExtra) {
-    return this.client.app.log({ body: { service: SERVICE, level, message, ...(extra ? { extra } : {}) } })
-  }
-}
-
-
-function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-
-function parseOptions(raw?: PluginOptions): Options {
-  const agents = raw?.agents ?? []
-
-  if (!Array.isArray(agents) || agents.some((agent) => typeof agent !== "string" || !agent.trim())) {
-    throw new Error('[superpowers-agent] "agents" must be an array of non-empty strings')
-  }
-
-  /**
-   * Дубликаты не должны повторно менять одну entry. `superpowers` исключается
-   * из allowlist, поскольку его lifecycle должен уважать explicit disable:
-   * entry дополняется (или создаётся), а disabled остаётся выключенной.
-   */
-  const uniqueAgents = [...new Set(agents.map((agent) => agent.trim()))].filter((agent) => agent !== SUPERPOWERS_AGENT)
-  return { agents: uniqueAgents }
-}
-
-function environmentOptions(value: string): Options {
-  let agents: unknown
-  try {
-    agents = JSON.parse(value)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`[superpowers-agent] invalid ${AGENTS_ENV}: ${detail}`)
-  }
-
-  return parseOptions({ agents })
-}
-
-
-/**
- * Находит физический каталог `superpowers/skills` через JavaScript module
- * resolver, а не через захардкоженный `~/.config/opencode/node_modules/...`.
- *
- * `import.meta.resolve("superpowers/package.json")` использует тот же module
- * resolution environment, в котором выполняется этот ES module, и возвращает
- * URL реально установленного package.json.
- *
- * Это важно, потому что dependency теоретически может находиться не по
- * захардкоженному пути (другая config directory, package layout и т.п.).
- */
-function skillsDir(): string {
-  const packageJson = fileURLToPath(import.meta.resolve("superpowers/package.json"))
-
-  return join(dirname(packageJson), "skills")
-}
-
-/**
- * Читает `name` из YAML frontmatter файла SKILL.md.
- *
- * Мы намеренно не используем имя директории как skill ID: OpenCode использует
- * metadata `name` из самого SKILL.md, поэтому permissions должны строиться по
- * тому же значению.
- *
- * Полный YAML parser намеренно не добавляется: bundled skills ожидаются с
- * простым однострочным `name`. Если upstream перейдёт на multiline или escaped
- * YAML scalars, этот ограниченный parser потребуется заменить.
- */
-function skillName(file: string): string {
-  const source = readFileSync(file, "utf8")
-
-  /** Не ищем `name` в body, чтобы содержимое skill не выдавало себя за metadata. */
-  const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1]
-
-  const name = frontmatter?.match(/^name:[ \t]*["']?([^"'\r\n]*?)["']?[ \t]*$/m)?.[1]?.trim()
-
-  if (!name) {
-    throw new Error(`[superpowers-agent] skill has no valid name: ${file}`)
-  }
-
-  return name
-}
-
-
-/**
- * Рекурсивно находит все `SKILL.md` внутри upstream `skills/`.
- *
- * Это намеренно повторяет идею native OpenCode skill discovery: plugin не
- * содержит сопровождаемый вручную список имён. После обновления Superpowers
- * новый skill автоматически попадёт в generated permissions.
- */
-type DiscoveredSkill = { name: string; path: string }
-
-function discoverSkills(dir: string): DiscoveredSkill[] {
-  const skills: DiscoveredSkill[] = []
-
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
-    const path = join(dir, entry.name)
-
-    if (entry.isDirectory()) {
-      skills.push(...discoverSkills(path))
-    } else if (entry.name === "SKILL.md") {
-      skills.push({ name: skillName(path), path })
+  private errorDetail(error: unknown): string {
+    if (error instanceof Error) {
+      return error.cause === undefined ? error.message : `${error.message}; caused by: ${this.errorDetail(error.cause)}`
+    } else {
+      return String(error)
     }
   }
 
-  return skills
+  private log(level: "debug" | "info" | "error" | "warn", message: string, error?: unknown, extra?: LogExtra) {
+    const details = error === undefined ? extra : { ...extra, error: this.errorDetail(error) }
+    return this.client.app.log({ body: { service: SERVICE, level, message, ...(details ? { extra: details } : { }) } })
+  }
 }
+
+
+class SkillDiscovery {
+  private readonly root: string
+  private readonly logger: Logger
+
+  constructor(root: string, logger: Logger) {
+    this.root = root
+    this.logger = logger
+  }
+
+  /**
+   * Discovers unique skill names recursively below the root directory.
+   *
+   * @returns The unique skill names in traversal insertion order.
+   */
+  async discover(): Promise<string[]> {
+    const discoveredSkillNames = new Set<string>()
+    await this.scanDirectory(this.root, discoveredSkillNames)
+    return [...discoveredSkillNames]
+  }
+
+  private async scanDirectory(dir: string, discoveredSkillNames: Set<string>): Promise<void> {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name)
+
+      if (entry.isDirectory()) {
+        await this.scanDirectory(path, discoveredSkillNames)
+      } else if (entry.name === "SKILL.md") {
+        const discoveredSkill = this.readSkillName(path)
+        if (discoveredSkill) {
+          discoveredSkillNames.add(discoveredSkill)
+        } else {
+          await this.logger.warn("Skipped a skill file without a valid name", { file: path })
+        }
+      }
+    }
+  }
+
+  /**
+   * Reads the skill name from a `SKILL.md` file's YAML frontmatter, supporting
+   * only the single-line `name` values used by Superpowers instead of full YAML.
+   *
+   * Synchronous I/O is negligible because discovery runs once during plugin
+   * initialization over the small set of bundled skills.
+   *
+   * @param file - The path to a `SKILL.md` file.
+   * @returns The trimmed skill name, or `undefined` when no valid name is found.
+   */
+  private readSkillName(file: string): string | undefined {
+    const source = readFileSync(file, "utf8")
+
+    const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1]
+    return frontmatter?.match(/^name:[ \t]*["']?([^"'\r\n]*?)["']?[ \t]*$/m)?.[1]?.trim()
+  }
+}
+
+
+function parsePluginOptions(raw?: PluginOptions): Options {
+  const agents = raw?.agents ?? []
+  if (!Array.isArray(agents) || agents.some((agent) => typeof agent !== "string" || !agent.trim())) {
+    throw new Error('Field "agents" must be an array of non-empty strings')
+  }
+  return { agents: [...new Set(agents.map((agent) => agent.trim()))] }
+}
+
+function parseEnvironmentOptions(value: string): Options {
+  try {
+    return parsePluginOptions({ agents: value ? value.split(',') : [] })
+  } catch (error) {
+    throw new Error(`Invalid ${AGENTS_ENV}`, { cause: error })
+  }
+}
+
+
+/**
+ * Resolves the directory containing the skills bundled with Superpowers.
+ *
+ * @returns The absolute path to the installed Superpowers skills directory.
+ */
+function skillsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.resolve("superpowers/package.json"))), "skills")
+}
+
+
+// TODO: небольшой docstring
+async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
+  configHook: NonNullable<Hooks["config"]>
+  transformHook: NonNullable<Hooks["experimental.chat.messages.transform"]>
+  skills: string[]
+}> {
+  if (typeof SuperpowersPlugin !== "function") {
+    throw new Error("Upstream plugin is not callable")
+  }
+
+  const upstream: Hooks = await SuperpowersPlugin(input)
+  if (typeof upstream["config"] !== "function") {
+    throw new Error("Upstream config hook is not callable")
+  }
+  if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
+    throw new Error("Upstream experimental.chat.messages.transform hook is not callable")
+  }
+
+  const dir = skillsDir()
+  const discoveredSkills = await new SkillDiscovery(dir, logger).discover()
+  if (!discoveredSkills.length) {
+    throw new Error(`No Superpowers skills found in ${dir}`)
+  }
+  if (!discoveredSkills.includes(POLICY_SKILL)) {
+    throw new Error(`Superpowers policy skill "${POLICY_SKILL}" not found`)
+  }
+
+  return {
+    configHook: upstream["config"],
+    transformHook: upstream["experimental.chat.messages.transform"],
+    skills: discoveredSkills
+  }
+}
+
 
 function permissions(skills: string[], action: Action): SkillPermissions {
   return Object.fromEntries(skills.map((name) => [name, action]))
@@ -449,86 +473,32 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
 
   let options: Options
   try {
-    options = environment === undefined ? parseOptions(rawOptions) : environmentOptions(environment)
+    options = environment === undefined ? parsePluginOptions(rawOptions) : parseEnvironmentOptions(environment)
   } catch (error) {
-    await logger.warn("Invalid agent configuration; additional agents are disabled", { error: errorDetail(error) })
+    await logger.warn("Invalid agent configuration; additional agents are disabled", error)
     options = { agents: [] }
   }
 
-  /**
-   * Инициализируем upstream plugin как библиотеку.
-   *
-   * Важно: мы НЕ возвращаем его hooks OpenCode напрямую. `upstream` — просто
-   * обычный JS object с callbacks. Ни один upstream hook не выполнится, пока
-   * этот wrapper явно его не вызовет.
-   */
-  let upstreamConfig: NonNullable<Hooks["config"]>
-  let upstreamTransform: NonNullable<Hooks["experimental.chat.messages.transform"]>
-  let uniqueSkills: string[]
+  let upstreamConfigHook: NonNullable<Hooks["config"]>
+  let upstreamTransformHook: NonNullable<Hooks["experimental.chat.messages.transform"]>
+  let upstreamSkills: string[]
   try {
-    if (typeof SuperpowersPlugin !== "function") {
-      throw new Error("[superpowers-agent] upstream plugin is not callable")
-    }
-
-    const upstream: Hooks = await SuperpowersPlugin(input)
-
-    if (typeof upstream?.config !== "function") {
-      throw new Error("[superpowers-agent] required upstream config hook is not callable")
-    }
-
-    if (typeof upstream["experimental.chat.messages.transform"] !== "function") {
-      throw new Error("[superpowers-agent] required upstream experimental.chat.messages.transform hook is not callable")
-    }
-
-    upstreamConfig = upstream.config
-    upstreamTransform = upstream["experimental.chat.messages.transform"]
-
-    const dir = skillsDir()
-
-    /**
-     * Наш собственный discovery нужен только для permissions. Само содержимое
-     * skills и bootstrap остаётся ответственностью upstream plugin/OpenCode.
-     */
-    const discoveredSkills = discoverSkills(dir)
-
-    if (!discoveredSkills.length) {
-      throw new Error(`[superpowers-agent] no Superpowers skills found in ${dir}`)
-    }
-
-    const skillsByName = new Map<string, DiscoveredSkill[]>()
-    for (const skill of discoveredSkills) {
-      const matches = skillsByName.get(skill.name) ?? []
-      matches.push(skill)
-      skillsByName.set(skill.name, matches)
-    }
-    const conflicts = [...skillsByName].filter(([, skills]) => skills.length > 1).sort(([left], [right]) => left.localeCompare(right))
-
-    if (conflicts.length) {
-      /** Permissions identify skills only by name, so bundled names must be unique. */
-      const detail = conflicts.map(([name, skills]) => [`duplicate bundled skill name "${name}":`, ...skills.map((skill) => `  ${skill.path}`).sort()].join("\n")).join("\n")
-      throw new Error(`[superpowers-agent] ${detail}`)
-    }
-
-    uniqueSkills = discoveredSkills.map((skill) => skill.name)
-
-    if (!uniqueSkills.includes(POLICY_SKILL)) {
-      /** Без upstream policy skill невозможно получить полный Superpowers mode. */
-      throw new Error(`[superpowers-agent] required skill "${POLICY_SKILL}" not found`)
-    }
+    let upstream = await loadSuperpowers(input, logger)
+    upstreamConfigHook = upstream.configHook
+    upstreamTransformHook = upstream.transformHook
+    upstreamSkills = upstream.skills
   } catch (error) {
-    await logger.error("Failed to initialize Superpowers; plugin is disabled", {
-      error: errorDetail(error),
-    })
-    return {}
+    await logger.error("Failed to load Superpowers; plugin is disabled", error)
+    return { } // do not register Superpowers plugin hooks on error
   }
 
-  const capabilities = uniqueSkills.filter((name) => name !== POLICY_SKILL)
+  const capabilities = upstreamSkills.filter((name) => name !== POLICY_SKILL)
 
   /**
    * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
    * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
    */
-  const denied = permissions(uniqueSkills, "deny")
+  const denied = permissions(upstreamSkills, "deny")
 
   /**
    * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
@@ -543,6 +513,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
    */
   const enabledAgents = new Set<string>()
 
+  // TODO: docstring о том, что это за функция и зачем
   const configHook: NonNullable<Hooks["config"]> = async (config) => {
     const runtimeConfig = config as RuntimeConfig
 
@@ -555,7 +526,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * Upstream знает собственный package layout и добавляет свой `skills/`
        * в `config.skills.paths`.
        */
-      await upstreamConfig(draft as Config)
+      await upstreamConfigHook(draft as Config)
 
       /**
        * Накладываем access-control после upstream, чтобы wrapper имел последнее
@@ -589,35 +560,31 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
       for (const agent of nextEnabledAgents) enabledAgents.add(agent)
     } catch (error) {
       enabledAgents.clear()
-      await logger.error("Failed to configure Superpowers; plugin is disabled", {
-        error: errorDetail(error),
-      })
+      await logger.error("Failed to configure Superpowers; plugin is disabled", error)
     }
   }
 
-  return {
-    config: configHook,
-
-    /**
-     * Не копируем bootstrap: делегирование upstream сохраняет его policy,
-     * tool mapping и duplicate protection. Wrapper отвечает только за gate по
-     * агенту последнего user turn.
-     */
-    "experimental.chat.messages.transform": async (hookInput, output) => {
-      const user = latestUser(output.messages)
-      if (!user || !enabledAgents.has(user.agent)) return
-
-      /**
-       * Upstream полностью контролирует:
-       * - чтение `using-superpowers`;
-       * - оригинальный prompt/wrapper;
-       * - OpenCode tool mapping;
-       * - duplicate protection/caching;
-       * - фактическую mutation messages.
-       */
-      await upstreamTransform(hookInput, output)
-    },
+  /**
+   * Enables the upstream Superpowers bootstrap only for configured agents.
+   *
+   * Because OpenCode may invoke this hook on every agent step, the active agent
+   * is determined from the latest user message in the current history.
+   *
+   * If that agent is enabled, delegates to the upstream transform, which handles
+   * bootstrap injection, tool mapping, and duplicate protection. Otherwise,
+   * leaves the messages unchanged.
+   *
+   * @param hookInput - OpenCode transform context, passed through unchanged.
+   * @param output - Mutable messages prepared for the next model request.
+   */
+  const transformHook: NonNullable<Hooks["experimental.chat.messages.transform"]> = async (hookInput, output) => {
+    const user = latestUser(output.messages)
+    if (user && enabledAgents.has(user.agent)) {
+      await upstreamTransformHook(hookInput, output)
+    }
   }
+
+  return { config: configHook, "experimental.chat.messages.transform": transformHook }
 }
 
 export default SuperpowersAgentPlugin

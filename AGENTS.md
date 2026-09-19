@@ -15,6 +15,7 @@ Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands
 
 - Before changing OpenCode config, agents, skills, commands, plugins, tools, or permissions, load the built-in `customize-opencode` skill and follow its current schema guidance.
 - Prefer the simplest suitable resource type; put reusable procedures in skills instead of duplicating them across agents.
+- Keep `plugins/` flat: every file in this directory represents one and only one standalone plugin. Do not create subdirectories or place shared/helper modules there.
 - `.opencode/plans/` and `tmp/` are Git-ignored but deliberately exposed to OpenCode through `.ignore`.
 - OpenCode loads config-time resources only at startup. Tell the user to restart after changing them.
 

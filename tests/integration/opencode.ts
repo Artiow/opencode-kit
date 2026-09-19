@@ -75,16 +75,23 @@ export async function runOpenCode(args: string[], options: RunOptions = {}) {
 
 export async function runIsolatedPlugin(
   script: string,
-  options: { env?: Record<string, string>; provisionDependencies?: boolean } = {},
+  options: {
+    env?: Record<string, string>
+    provisionDependencies?: boolean
+    setup?: (fixture: { root: string; configRoot: string }) => Promise<void>
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "opencode-kit-plugin-test-"))
-  const configRoot = await installPlugin(root, options.provisionDependencies ?? false)
-  const runner = join(root, "runner.mjs")
-  await writeFile(runner, script.replace("PLUGIN_URL", JSON.stringify(
-    `file://${join(configRoot, "plugins", "superpowers-agent.ts")}`,
-  )))
 
   try {
+    const configRoot = await installPlugin(root, options.provisionDependencies ?? false)
+    await options.setup?.({ root, configRoot })
+
+    const runner = join(root, "runner.mjs")
+    await writeFile(runner, script.replace("PLUGIN_URL", JSON.stringify(
+      `file://${join(configRoot, "plugins", "superpowers-agent.ts")}`,
+    )))
+
     return await execFileAsync(process.execPath, ["--experimental-strip-types", runner], {
       cwd: root,
       env: { PATH: process.env.PATH, HOME: join(root, "home"), ...options.env },
