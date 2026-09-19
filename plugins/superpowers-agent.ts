@@ -192,8 +192,16 @@ function skillsDir(): string {
   return join(dirname(fileURLToPath(import.meta.resolve("superpowers/package.json"))), "skills")
 }
 
-
-// TODO: небольшой docstring
+/**
+ * Initializes the upstream Superpowers plugin and discovers its bundled skills.
+ *
+ * Validates the required hooks and policy skill before exposing the integration.
+ *
+ * @param input - OpenCode plugin context passed to the upstream plugin.
+ * @param logger - Logger used during skill discovery.
+ * @returns Validated upstream hooks and discovered skill names.
+ * @throws If initialization or discovery fails, or required hooks or skills are missing.
+ */
 async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
   configHook: ConfigHook
   transformHook: TransformHook
@@ -468,26 +476,21 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     options = { agents: [] }
   }
 
-  let upstreamConfigHook: ConfigHook
-  let upstreamTransformHook: TransformHook
-  let upstreamSkills: string[]
+  let upstream: Awaited<ReturnType<typeof loadSuperpowers>>
   try {
-    let upstream = await loadSuperpowers(input, logger)
-    upstreamConfigHook = upstream.configHook
-    upstreamTransformHook = upstream.transformHook
-    upstreamSkills = upstream.skills
+    upstream = await loadSuperpowers(input, logger)
   } catch (error) {
     await logger.error("Failed to load Superpowers; plugin is disabled", error)
     return { } // do not register Superpowers plugin hooks on error
   }
 
-  const capabilities = upstreamSkills.filter((name) => name !== POLICY_SKILL)
+  const capabilities = upstream.skills.filter((name) => name !== POLICY_SKILL)
 
   /**
    * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
    * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
    */
-  const denied = permissions(upstreamSkills, "deny")
+  const denied = permissions(upstream.skills, "deny")
 
   /**
    * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
@@ -515,7 +518,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * Upstream знает собственный package layout и добавляет свой `skills/`
        * в `config.skills.paths`.
        */
-      await upstreamConfigHook(draft as Config)
+      await upstream.configHook(draft as Config)
 
       /**
        * Накладываем access-control после upstream, чтобы wrapper имел последнее
@@ -569,7 +572,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
   const transformHook: TransformHook = async (hookInput, output) => {
     const user = latestUser(output.messages)
     if (user && enabledAgents.has(user.agent)) {
-      await upstreamTransformHook(hookInput, output)
+      await upstream.transformHook(hookInput, output)
     }
   }
 
