@@ -8,7 +8,7 @@ const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 const BRAINSTORMING = "brainstorming"
 const POLICY = "using-superpowers"
 
-type LogEntry = { service: string; level: string; message: string; extra?: Record<string, unknown> }
+type LogEntry = { service: string; level: string; message: string; extra?: { error: string } }
 
 type LoadSettings = {
   environment?: string
@@ -215,6 +215,9 @@ test("applies tuple and strict CSV agent options", async (t) => {
       assert.equal(config.agent.fallback.permission.skill[BRAINSTORMING], "deny")
       assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
       assert.equal(hasLevel(logs, "warn"), true)
+      const warning = logs.find((entry) => entry.level === "warn")!
+      assert.equal(warning.message, "Invalid agent configuration; additional agents are disabled")
+      assert.match(warning.extra!.error, /Invalid OPENCODE_SUPERPOWERS_AGENTS/)
     })
   }
 
@@ -228,6 +231,9 @@ test("applies tuple and strict CSV agent options", async (t) => {
     assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "deny")
     assert.equal(config.agent.superpowers.permission.skill[BRAINSTORMING], "allow")
     assert.equal(hasLevel(logs, "warn"), true)
+    const warning = logs.find((entry) => entry.level === "warn")!
+    assert.equal(warning.message, "Invalid agent configuration; additional agents are disabled")
+    assert.match(warning.extra!.error, /Field "agents" must be an array/)
   })
 })
 

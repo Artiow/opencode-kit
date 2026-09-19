@@ -12,12 +12,7 @@
  * Такое разделение не даёт wrapper-у разойтись с upstream workflow при
  * обновлениях Superpowers и оставляет здесь только политику, которой upstream
  * plugin не владеет: какие агенты получают skills и bootstrap.
- */
-
-import type { Config, Hooks, Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin"
-import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
-
-/**
+ * 
  * Upstream импортируется как factory, а не регистрируется в OpenCode отдельно:
  * wrapper должен контролировать вызов transform и не допускать глобальный
  * bootstrap для агентов вне opt-in scope.
@@ -26,37 +21,41 @@ import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@ope
  * declarations для этого export-а. `@ts-ignore` подавляет ошибку TypeScript
  * только для следующей строки; runtime-поведение импорта он не меняет.
  */
+
 // @ts-ignore
 import { SuperpowersPlugin } from "superpowers"
 
-/**
- * Синхронные операции здесь осознаны: они выполняются при инициализации
- * plugin до регистрации hooks. Каталог Superpowers мал, поэтому более сложная
- * async-координация не дала бы практической пользы на runtime request path.
- */
+import type { Config, Hooks, Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin"
+import type { UserMessage } from "@opencode-ai/sdk"
+import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
+
 import { readFileSync, readdirSync } from "node:fs"
-
-/**
- * Module resolver возвращает file: URL. Преобразуем его штатным API, а не
- * вручную, чтобы escaping и platform-specific paths не ломали discovery.
- */
 import { fileURLToPath } from "node:url"
-
 import { dirname, join } from "node:path"
-
 
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
-/**
- * Единственное имя upstream skill, которое plugin знает специально.
- *
- * `using-superpowers` — не обычная capability: upstream plugin использует его
- * как источник bootstrap/policy и при подходящей истории подмешивает его текст
- * в model context, когда wrapper делегирует upstream transform.
- * Поэтому мы не разрешаем агентам загружать этот skill повторно через native
- * `skill` tool.
- */
+
+/** Service identifier attached to plugin log records. */
+const SUPERPOWERS_LOG_SERVICE = "superpowers-agent"
+
+/** Upstream bootstrap policy skill denied through the native `skill` tool. */
 const POLICY_SKILL = "using-superpowers"
+
+/** Environment variable containing comma-separated opt-in agent names. */
+const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
+
+
+/** Superpowers Agent plugin options. */
+type Options = { agents: string[] }
+
+/**
+ * Hook types are derived from the official API declarations, so incompatible
+ * OpenCode API changes are caught by typecheck.
+ */
+type ConfigHook = NonNullable<Hooks["config"]>
+type TransformHook = NonNullable<Hooks["experimental.chat.messages.transform"]>
+
 
 /** Локальное имя следует официальному SDK-типу permission actions. */
 type Action = PermissionActionConfig
@@ -67,18 +66,6 @@ type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & { permission?: Permi
 
 type RuntimeConfig = Omit<Config, "permission" | "agent"> & { permission?: PermissionConfig; agent?: Record<string, RuntimeAgentConfig> }
 
-/**
- * Выводим тип messages из официального hook-а, чтобы изменение OpenCode API
- * ломало typecheck, а не оставляло wrapper с незаметно устаревшей копией shape.
- */
-type Messages = Parameters<NonNullable<Hooks["experimental.chat.messages.transform"]>>[1]["messages"]
-
-type Options = { agents: string[] }
-type LogExtra = Record<string, unknown>
-
-const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
-const SERVICE = "superpowers-agent"
-
 
 // noinspection JSUnusedGlobalSymbols
 class Logger {
@@ -88,20 +75,20 @@ class Logger {
     this.client = client
   }
 
-  debug(message: string, error?: unknown, extra?: LogExtra) {
-    return this.log("debug", message, error, extra)
+  debug(message: string, error?: unknown) {
+    return this.log("debug", message, error)
   }
 
-  info(message: string, error?: unknown, extra?: LogExtra) {
-    return this.log("info", message, error, extra)
+  info(message: string, error?: unknown) {
+    return this.log("info", message, error)
   }
 
-  warn(message: string, error?: unknown, extra?: LogExtra) {
-    return this.log("warn", message, error, extra)
+  warn(message: string, error?: unknown) {
+    return this.log("warn", message, error)
   }
 
-  error(message: string, error?: unknown, extra?: LogExtra) {
-    return this.log("error", message, error, extra)
+  error(message: string, error?: unknown) {
+    return this.log("error", message, error)
   }
 
   private errorDetail(error: unknown): string {
@@ -112,9 +99,9 @@ class Logger {
     }
   }
 
-  private log(level: "debug" | "info" | "error" | "warn", message: string, error?: unknown, extra?: LogExtra) {
-    const details = error === undefined ? extra : { ...extra, error: this.errorDetail(error) }
-    return this.client.app.log({ body: { service: SERVICE, level, message, ...(details ? { extra: details } : { }) } })
+  private log(level: "debug" | "info" | "error" | "warn", message: string, error?: unknown) {
+    const extra = error === undefined ? undefined : { error: this.errorDetail(error) }
+    return this.client.app.log({ body: { service: SUPERPOWERS_LOG_SERVICE, level, message, extra } })
   }
 }
 
@@ -129,9 +116,13 @@ class SkillDiscovery {
   }
 
   /**
-   * Discovers unique skill names recursively below the root directory.
+   * Recursively discovers skill names from `SKILL.md` frontmatter under the root.
+   * Invalid names are skipped with a warning, and duplicates are omitted.
    *
-   * @returns The unique skill names in traversal insertion order.
+   * Synchronous I/O is acceptable because discovery scans a small bundled directory
+   * once during plugin initialization.
+   *
+   * @returns Unique skill names in lexical traversal order.
    */
   async discover(): Promise<string[]> {
     const discoveredSkillNames = new Set<string>()
@@ -150,7 +141,7 @@ class SkillDiscovery {
         if (discoveredSkill) {
           discoveredSkillNames.add(discoveredSkill)
         } else {
-          await this.logger.warn("Skipped a skill file without a valid name", { file: path })
+          await this.logger.warn(`Skill file ${path} has no valid name and was skipped`)
         }
       }
     }
@@ -204,8 +195,8 @@ function skillsDir(): string {
 
 // TODO: небольшой docstring
 async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
-  configHook: NonNullable<Hooks["config"]>
-  transformHook: NonNullable<Hooks["experimental.chat.messages.transform"]>
+  configHook: ConfigHook
+  transformHook: TransformHook
   skills: string[]
 }> {
   if (typeof SuperpowersPlugin !== "function") {
@@ -445,16 +436,14 @@ function configureSuperpowersAgent(config: RuntimeConfig, allowed: SkillPermissi
 }
 
 
-type UserMessageInfo = Extract<Messages[number]["info"], { role: "user" }>
-
 /**
  * Routing определяется последним user turn: именно его metadata фиксирует
  * выбранного агента. На порядок массива не полагаемся, потому что OpenCode
  * может передать переупорядоченную историю; ID служит только детерминированным
  * tie-breaker при одинаковом timestamp.
  */
-function latestUser(messages: Messages): UserMessageInfo | undefined {
-  let latest: UserMessageInfo | undefined
+function latestUser(messages: Parameters<TransformHook>[1]["messages"]): UserMessage | undefined {
+  let latest: UserMessage | undefined
 
   for (const { info } of messages) {
     if (info.role !== "user") continue
@@ -479,8 +468,8 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     options = { agents: [] }
   }
 
-  let upstreamConfigHook: NonNullable<Hooks["config"]>
-  let upstreamTransformHook: NonNullable<Hooks["experimental.chat.messages.transform"]>
+  let upstreamConfigHook: ConfigHook
+  let upstreamTransformHook: TransformHook
   let upstreamSkills: string[]
   try {
     let upstream = await loadSuperpowers(input, logger)
@@ -514,7 +503,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
   const enabledAgents = new Set<string>()
 
   // TODO: docstring о том, что это за функция и зачем
-  const configHook: NonNullable<Hooks["config"]> = async (config) => {
+  const configHook: ConfigHook = async (config) => {
     const runtimeConfig = config as RuntimeConfig
 
     try {
@@ -577,7 +566,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
    * @param hookInput - OpenCode transform context, passed through unchanged.
    * @param output - Mutable messages prepared for the next model request.
    */
-  const transformHook: NonNullable<Hooks["experimental.chat.messages.transform"]> = async (hookInput, output) => {
+  const transformHook: TransformHook = async (hookInput, output) => {
     const user = latestUser(output.messages)
     if (user && enabledAgents.has(user.agent)) {
       await upstreamTransformHook(hookInput, output)
