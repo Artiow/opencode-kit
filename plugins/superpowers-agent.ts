@@ -27,7 +27,7 @@ import { SuperpowersPlugin } from "superpowers"
 
 import type { Config, Hooks, Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin"
 import type { UserMessage } from "@opencode-ai/sdk"
-import type { AgentConfig, PermissionActionConfig, PermissionConfig } from "@opencode-ai/sdk/v2"
+import type { AgentConfig, PermissionConfig, PermissionObjectConfig, PermissionActionConfig } from "@opencode-ai/sdk/v2"
 
 import { readFileSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -49,20 +49,13 @@ const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 /** Superpowers Agent plugin options. */
 type Options = { agents: string[] }
 
+
 /*
  * Hook types are derived from the official API declarations, so incompatible
  * OpenCode API changes are caught by typecheck.
  */
 type ConfigHook = NonNullable<Hooks["config"]>
 type TransformHook = NonNullable<Hooks["experimental.chat.messages.transform"]>
-
-/*
- * Together, these aliases model an ordered OpenCode permission ruleset:
- * each entry associates a permission pattern with an SDK action and insertion
- * order determines precedence.
- */
-type Action = PermissionActionConfig
-type RuleMap = Record<string, Action>
 
 /*
  * The plugin package still derives `Config` from legacy SDK declarations,
@@ -249,7 +242,7 @@ async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
  * @param action - Permission action assigned to each key.
  * @returns A rule map preserving the order of `keys`.
  */
-function createRuleMap(keys: string[], action: Action): RuleMap {
+function createRuleMap(keys: string[], action: PermissionActionConfig): PermissionObjectConfig {
   return Object.fromEntries(keys.map((name) => [name, action]))
 }
 
@@ -262,43 +255,35 @@ function createRuleMap(keys: string[], action: Action): RuleMap {
  * @param override - Rules that replace matching base entries and take final precedence.
  * @returns A new merged rule map.
  */
-function mergeRuleMaps(base: RuleMap, override: RuleMap): RuleMap {
+function mergeRuleMaps(base: PermissionObjectConfig, override: PermissionObjectConfig): PermissionObjectConfig {
   return Object.fromEntries([...Object.entries(base).filter(([name]) => !(name in override)), ...Object.entries(override)])
 }
 
 
-function isAction(value: unknown): value is Action {
-  return value === "allow" || value === "ask" || value === "deny"
-}
-
 /**
- * Приводит scalar shorthand к map, потому что wrapper должен добавить owned
- * skill rules, не потеряв действие пользователя для остальных permissions.
- */
-function normalizePermission(current: unknown): Exclude<PermissionConfig, PermissionActionConfig> {
-  if (current === undefined) return {}
-  if (isAction(current)) return { "*": current }
-  if (current && typeof current === "object" && !Array.isArray(current)) {
-    return current as Exclude<PermissionConfig, PermissionActionConfig>
-  }
-
-  throw new Error("[superpowers-agent] permission must be a permission action or object")
-}
-
-/**
- * Приводит scalar shorthand `permission.skill` к единой map-форме.
+ * Converts global and skill permission shorthands to object forms while
+ * preserving existing permission entries. A scalar global action becomes a
+ * wildcard permission, and a scalar `skill` action becomes a wildcard rule map.
  *
- * OpenCode допускает как `skill: "allow"`, так и granular map. Wrapper
- * работает только с map, чтобы безопасно добавлять owned exact rules.
+ * @param current - Permission config to normalize.
+ * @returns A permission object containing an object-form skill rule map.
+ *
+ * @example
+ * ```ts
+ * normalizePermissionConfig("allow")
+ * // => { "*": "allow", skill: { } }
+ * ```
+ *
+ * @example
+ * ```ts
+ * normalizePermissionConfig({ bash: "ask", skill: "deny" })
+ * // => { bash: "ask", skill: { "*": "deny" } }
+ * ```
  */
-function normalizeRuleMap(current: unknown): RuleMap {
-  if (current === undefined) return {}
-  if (isAction(current)) return { "*": current }
-  if (current && typeof current === "object" && !Array.isArray(current)) {
-    return { ...(current as RuleMap) }
-  }
-
-  throw new Error("[superpowers-agent] permission.skill must be a permission action or object")
+function normalizePermissionConfig(current: PermissionConfig | undefined) {
+  const permission = typeof current === "string" ? { "*": current } : current ?? { }
+  const skill = typeof permission.skill === "string" ? { "*": permission.skill } : permission.skill ?? { }
+  return { ...permission, skill }
 }
 
 /**
@@ -307,11 +292,10 @@ function normalizeRuleMap(current: unknown): RuleMap {
  *
  * @param target - Configuration object whose skill permissions are updated.
  * @param skillRuleMap - Ordered skill permission rules to apply.
- * @throws When the existing permission or skill rule has an unsupported shape.
  */
-function applySkillRulesTo(target: { permission?: PermissionConfig }, skillRuleMap: RuleMap): void {
-  target.permission = normalizePermission(target.permission)
-  target.permission.skill = mergeRuleMaps(normalizeRuleMap(target.permission.skill), skillRuleMap)
+function applySkillRulesTo(target: { permission?: PermissionConfig }, skillRuleMap: PermissionObjectConfig): void {
+  const permission = normalizePermissionConfig(target.permission)
+  target.permission = { ...permission, skill: mergeRuleMaps(permission.skill, skillRuleMap) }
 }
 
 
@@ -387,7 +371,7 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
  * обычный provider/base prompt, а нам нужен стандартный OpenCode prompt плюс
  * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
  */
-function configureSuperpowersAgent(config: RuntimeConfig, skillRuleMap: RuleMap): boolean {
+function configureSuperpowersAgent(config: RuntimeConfig, skillRuleMap: PermissionObjectConfig): boolean {
   config.agent ??= {}
 
   const configured = config.agent[SUPERPOWERS_AGENT]

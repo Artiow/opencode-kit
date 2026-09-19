@@ -320,34 +320,6 @@ test("normalizes scalar root, agent, and skill permissions", async () => {
   assert.equal(config.agent.superpowers.permission.skill[POLICY], "deny")
 })
 
-test("rolls back invalid permission forms and clears bootstrap routing", async (t) => {
-  for (const [name, invalid] of [
-    ["global permission", { permission: true, agent: {} }],
-    ["global skill", { permission: { skill: true }, agent: {} }],
-    ["agent permission", { agent: { superpowers: { permission: true } } }],
-    ["agent skill", { agent: { superpowers: { permission: { skill: true } } } }],
-  ] as const) {
-    await t.test(name, async () => {
-      const logs: LogEntry[] = []
-      const hooks = await load({ logs })
-      await hooks.config!({} as never)
-
-      const config: Record<string, any> = structuredClone(invalid)
-      const snapshot = structuredClone(config)
-      await hooks.config!(config as never)
-
-      const messages = [userMessage(`session-${name}`, "superpowers")]
-      const before = structuredClone(messages)
-      await transform(hooks, messages)
-
-      assert.deepEqual(config, snapshot)
-      assert.equal("skills" in config, false)
-      assert.equal(hasLevel(logs, "error"), true)
-      assert.deepEqual(messages, before)
-    })
-  }
-})
-
 test("routes bootstrap by the latest user timestamp instead of array order", async () => {
   const hooks = await load()
   await hooks.config!({ agent: { reviewer: {} } } as never)

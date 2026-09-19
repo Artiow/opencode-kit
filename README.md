@@ -63,7 +63,7 @@ OpenCode permissions identify a skill by frontmatter `name`, not source path. A 
 
 Bootstrap routing follows the agent on the chronologically latest user message, using the message ID as a deterministic tie-breaker when timestamps match. Every transform invocation whose latest user-message agent is enabled delegates to the unchanged upstream bootstrap. The wrapper uses message metadata only and does not infer a session or dispatch type.
 
-Histories without a user message, or whose latest user-message agent is not enabled, do not delegate. Upstream retains ownership of bootstrap content, caching, and duplicate protection. The config hook stages upstream and wrapper changes and commits them atomically; invalid configuration or an upstream failure exposes none of the staged config mutations. OpenCode may continue after reporting a plugin failure, so treat any `[superpowers-agent]` startup error as a disabled integration and fix it before use.
+Histories without a user message, or whose latest user-message agent is not enabled, do not delegate. Upstream retains ownership of bootstrap content, caching, and duplicate protection. The config hook stages upstream and wrapper changes and commits them atomically; an upstream or commit failure exposes none of the staged config mutations. OpenCode may continue after reporting a plugin failure, so treat any `[superpowers-agent]` startup error as a disabled integration and fix it before use.
 
 After setup or changes, quit and restart OpenCode; plugins, configuration, and environment options are loaded only at startup. Validate registration and representative agents with:
 
