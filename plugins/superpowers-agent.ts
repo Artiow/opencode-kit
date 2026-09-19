@@ -451,6 +451,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
    */
   const configHook: ConfigHook = async (config) => {
     const runtimeConfig = config as RuntimeConfig
+    enabledAgents.clear()
 
     try {
       const draft = structuredClone(runtimeConfig)
@@ -461,37 +462,28 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
       // apply the global baseline after upstream so the wrapper has final precedence
       applySkillRulesTo(draft, baselineRuleMap)
 
-      const requestedAgentNames = new Set(options.agents)
-      for (const [agentName, agent] of Object.entries(draft.agent ?? {})) {
-        if (agentName === SUPERPOWERS_AGENT || requestedAgentNames.has(agentName) || agent.disable === true) continue
-        applySkillRulesTo(agent, baselineRuleMap)
+      // prevent non-opted-in agents from overriding the global denying with agent-level permissions
+      for (const [agentName, agent] of Object.entries(draft.agent ?? { })) {
+        if (agentName !== SUPERPOWERS_AGENT && !options.agents.includes(agentName) && agent.disable !== true) {
+          applySkillRulesTo(agent, baselineRuleMap)
+        }
       }
 
-      const nextEnabledAgents = new Set<string>()
+      // configure the implicit Superpowers agent before processing explicit opt-ins
+      if (configureSuperpowersAgent(draft, overrideRuleMap)) {
+        enabledAgents.add(SUPERPOWERS_AGENT)
+      }
 
-      /**
-       * Allow rules ставятся на agent level, чтобы они осознанно перекрывали
-       * global deny только для существующего explicit opt-in. Отсутствующее имя
-       * игнорируется и не создаёт новый agent из возможной опечатки.
-       */
+      // grant Superpowers access only to existing, non-disabled explicit opt-in agents
       for (const agentName of options.agents) {
         const agent = draft.agent?.[agentName]
-        if (!agent || agent.disable === true) continue
-
-        applySkillRulesTo(agent, overrideRuleMap)
-        nextEnabledAgents.add(agentName)
-      }
-      if (configureSuperpowersAgent(draft, overrideRuleMap)) {
-        nextEnabledAgents.add(SUPERPOWERS_AGENT)
+        if (agentName !== SUPERPOWERS_AGENT && agent && agent.disable !== true) {
+          applySkillRulesTo(agent, overrideRuleMap)
+          enabledAgents.add(agentName)
+        }
       }
 
-      /**
-       * Не публикуем bootstrap scope до commit: transform не должен делегировать
-       * upstream для конфигурации, которая не смогла установиться.
-       */
       commitConfig(runtimeConfig, draft)
-      enabledAgents.clear()
-      for (const agent of nextEnabledAgents) enabledAgents.add(agent)
     } catch (error) {
       enabledAgents.clear()
       await logger.error("Failed to configure Superpowers; plugin is disabled", error)
