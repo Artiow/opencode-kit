@@ -300,6 +300,25 @@ function applySkillRulesTo(target: { permission?: PermissionConfig }, skillRuleM
 
 
 /**
+ * Creates the implicit Superpowers agent or fills its missing mode and description,
+ * preserving existing values and leaving an explicitly disabled agent unchanged.
+ * Permissions and bootstrap delivery are configured separately.
+ *
+ * @param config - Mutable runtime configuration containing the agent registry.
+ */
+function configureSuperpowersAgent(config: RuntimeConfig): void {
+  config.agent ??= { }
+
+  const configured = config.agent[SUPERPOWERS_AGENT]
+  if (configured?.disable !== true) {
+    const agent = configured ?? (config.agent[SUPERPOWERS_AGENT] = { })
+    agent.mode ??= "primary"
+    agent.description ??= SUPERPOWERS_DESCRIPTION
+  }
+}
+
+
+/**
  * Config применяется транзакционно: upstream и wrapper сначала меняют clone,
  * чтобы exception не оставлял live config в частично обновлённом состоянии.
  * Перед первой mutation `commitConfig` проверяет все root descriptors, а
@@ -362,32 +381,6 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
 
 
 /**
- * Создаёт primary agent `superpowers` при отсутствии или дополняет существующую
- * non-disabled entry, сохраняя явно заданные mode и visibility.
- *
- * OpenCode API: `config.agent[name]`; `mode: "primary"` — default при создании.
- *
- * Мы сознательно НЕ задаём `prompt`: custom `agent.prompt` в OpenCode заменяет
- * обычный provider/base prompt, а нам нужен стандартный OpenCode prompt плюс
- * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
- */
-function configureSuperpowersAgent(config: RuntimeConfig, skillRuleMap: PermissionObjectConfig): boolean {
-  config.agent ??= {}
-
-  const configured = config.agent[SUPERPOWERS_AGENT]
-  if (configured?.disable === true) {
-    return false
-  }
-
-  const agent = configured ?? (config.agent[SUPERPOWERS_AGENT] = {})
-  agent.mode ??= "primary"
-  agent.description ??= SUPERPOWERS_DESCRIPTION
-  applySkillRulesTo(agent, skillRuleMap)
-  return true
-}
-
-
-/**
  * Routing определяется последним user turn: именно его metadata фиксирует
  * выбранного агента. На порядок массива не полагаемся, потому что OpenCode
  * может передать переупорядоченную историю; ID служит только детерминированным
@@ -427,6 +420,9 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     return { } // do not register Superpowers plugin hooks on error
   }
 
+  /** Includes the implicit Superpowers agent and additional agents requested through user options. */
+  const superpowersAgentNames = new Set([SUPERPOWERS_AGENT, ...options.agents])
+
   /** Applied globally and at agent level to make access to Superpowers explicitly opt-in. */
   const baselineRuleMap = createRuleMap(upstream.skills, "deny")
   /** Applied to opted-in agents while leaving bootstrap delivery to the upstream transform. */
@@ -464,20 +460,18 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
 
       // prevent non-opted-in agents from overriding the global denying with agent-level permissions
       for (const [agentName, agent] of Object.entries(draft.agent ?? { })) {
-        if (agentName !== SUPERPOWERS_AGENT && !options.agents.includes(agentName) && agent.disable !== true) {
+        if (!superpowersAgentNames.has(agentName) && agent.disable !== true) {
           applySkillRulesTo(agent, baselineRuleMap)
         }
       }
 
-      // configure the implicit Superpowers agent before processing explicit opt-ins
-      if (configureSuperpowersAgent(draft, overrideRuleMap)) {
-        enabledAgents.add(SUPERPOWERS_AGENT)
-      }
+      // create or augment the implicit Superpowers agent before processing all opt-ins
+      configureSuperpowersAgent(draft)
 
-      // grant Superpowers access only to existing, non-disabled explicit opt-in agents
-      for (const agentName of options.agents) {
+      // grant Superpowers access only to existing, non-disabled opt-in agents
+      for (const agentName of superpowersAgentNames) {
         const agent = draft.agent?.[agentName]
-        if (agentName !== SUPERPOWERS_AGENT && agent && agent.disable !== true) {
+        if (agent && agent.disable !== true) {
           applySkillRulesTo(agent, overrideRuleMap)
           enabledAgents.add(agentName)
         }
