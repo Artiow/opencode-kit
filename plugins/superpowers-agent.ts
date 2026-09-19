@@ -380,22 +380,24 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
 }
 
 
+function isLater(message: UserMessage, otherMessage: UserMessage): boolean {
+  return message.time.created > otherMessage.time.created || (message.time.created === otherMessage.time.created && message.id > otherMessage.id)
+}
+
 /**
- * Routing определяется последним user turn: именно его metadata фиксирует
- * выбранного агента. На порядок массива не полагаемся, потому что OpenCode
- * может передать переупорядоченную историю; ID служит только детерминированным
- * tie-breaker при одинаковом timestamp.
+ * Finds the chronologically latest user message regardless of array order,
+ * using the message ID as a deterministic tie-breaker for equal timestamps.
+ *
+ * @param messages - Message history supplied to the transform hook.
+ * @returns The latest user message, or `undefined` when the history contains none.
  */
 function latestUser(messages: Parameters<TransformHook>[1]["messages"]): UserMessage | undefined {
   let latest: UserMessage | undefined
-
   for (const { info } of messages) {
-    if (info.role !== "user") continue
-    if (!latest || info.time.created > latest.time.created || (info.time.created === latest.time.created && info.id > latest.id)) {
+    if (info.role === "user" && (!latest || isLater(info, latest))) {
       latest = info
     }
   }
-
   return latest
 }
 
