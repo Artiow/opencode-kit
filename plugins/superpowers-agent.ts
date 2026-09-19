@@ -200,7 +200,7 @@ function skillsDir(): string {
  * @param input - OpenCode plugin context passed to the upstream plugin.
  * @param logger - Logger used during skill discovery.
  * @returns Validated upstream hooks and discovered skill names.
- * @throws If initialization or discovery fails, or required hooks or skills are missing.
+ * @throws {@link Error} if initialization or discovery fails, or required hooks or skills are missing.
  */
 async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
   configHook: ConfigHook
@@ -318,15 +318,10 @@ function configureSuperpowersAgent(config: RuntimeConfig): void {
 }
 
 
-/**
- * Config применяется транзакционно: upstream и wrapper сначала меняют clone,
- * чтобы exception не оставлял live config в частично обновлённом состоянии.
- * Перед первой mutation `commitConfig` проверяет все root descriptors, а
- * reconciliation сохраняет ссылки на неизменившиеся nested values. Это важно
- * для потребителей, уже удерживающих ссылки на части исходного config.
- */
 function configEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true
+  if (Object.is(left, right)) {
+    return true
+  }
   if (Array.isArray(left) || Array.isArray(right)) {
     return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => configEqual(value, right[index]))
   }
@@ -339,39 +334,58 @@ function configEqual(left: unknown, right: unknown): boolean {
 }
 
 function reconciledValue(original: unknown, draft: unknown): unknown {
-  if (configEqual(original, draft)) return original
-
+  if (configEqual(original, draft)) {
+    return original
+  }
   if (Array.isArray(draft)) {
     const source = Array.isArray(original) ? original : []
     return draft.map((value, index) => reconciledValue(source[index], value))
   }
-
   if (draft && typeof draft === "object") {
-    const source = original && typeof original === "object" && !Array.isArray(original) ? original as Record<string, unknown> : {}
+    const source = original && typeof original === "object" && !Array.isArray(original) ? original as Record<string, unknown> : { }
     return Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, reconciledValue(source[key], value)]))
   }
-
   return draft
 }
 
-function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
-  const current = original as Record<string, unknown>
+/**
+ * Commits a fully staged configuration to the live target while retaining its
+ * root identity. Before mutating the target, validates every required top-level
+ * deletion, replacement, and addition, so a failed preflight leaves it unchanged.
+ * Changed containers follow the draft order while structurally equal nested values
+ * retain their original references.
+ *
+ * @example
+ * ```text
+ * target (same root)
+ * |- agent (replaced)
+ * |  |- build (original reference)
+ * |  `- superpowers (new value)
+ * `- provider (original reference)
+ * ```
+ *
+ * @param target - Mutable live configuration to update.
+ * @param draft - Fully staged configuration whose state should be committed.
+ * @throws {@link Error} when a root property descriptor or target extensibility prevents a required mutation.
+ */
+function commitConfigTo(target: RuntimeConfig, draft: RuntimeConfig): void {
+  const current = target as Record<string, unknown>
   const staged = draft as Record<string, unknown>
   const removed = Object.keys(current).filter((key) => !(key in staged))
   const changed = Object.keys(staged).filter((key) => !configEqual(current[key], staged[key])).map((key) => [key, reconciledValue(current[key], staged[key])] as const)
 
   for (const key of removed) {
     if (Object.getOwnPropertyDescriptor(current, key)?.configurable === false) {
-      throw new Error(`[superpowers-agent] cannot delete config.${key}`)
+      throw new Error(`Cannot delete config.${key}`)
     }
   }
   for (const [key] of changed) {
     const descriptor = Object.getOwnPropertyDescriptor(current, key)
     if (descriptor && (!("value" in descriptor) || !descriptor.writable)) {
-      throw new Error(`[superpowers-agent] cannot replace config.${key}`)
+      throw new Error(`Cannot replace config.${key}`)
     }
     if (!descriptor && !Object.isExtensible(current)) {
-      throw new Error(`[superpowers-agent] cannot add config.${key}`)
+      throw new Error(`Cannot add config.${key}`)
     }
   }
 
@@ -479,7 +493,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
         }
       }
 
-      commitConfig(runtimeConfig, draft)
+      commitConfigTo(runtimeConfig, draft)
     } catch (error) {
       enabledAgents.clear()
       await logger.error("Failed to configure Superpowers; plugin is disabled", error)
