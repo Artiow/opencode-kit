@@ -1,28 +1,19 @@
 /**
- * OpenCode plugin, который делает upstream Superpowers opt-in по агентам.
+ * Provides per-agent access to the upstream Superpowers workflow through the
+ * implicit `superpowers` agent and additional explicitly selected agents.
  *
- * Важная архитектурная идея:
- * - реализацию самого Superpowers workflow мы не копируем;
- * - upstream `superpowers` используется как библиотека;
- * - его `config` hook отвечает за регистрацию skills;
- * - его `experimental.chat.messages.transform` отвечает за сборку и injection
- *   оригинального Superpowers bootstrap;
- * - этот plugin добавляет только scope/access-control вокруг upstream hooks.
+ * Superpowers is loaded as a library: its config hook registers bundled skills,
+ * and its message transform produces and injects the original bootstrap. This
+ * wrapper owns only access policy, permission rules, and bootstrap routing.
  *
- * Такое разделение не даёт wrapper-у разойтись с upstream workflow при
- * обновлениях Superpowers и оставляет здесь только политику, которой upstream
- * plugin не владеет: какие агенты получают skills и bootstrap.
+ * The upstream plugin is intentionally not registered separately, preventing
+ * bootstrap injection outside the configured agent scope. Configuration fails
+ * closed, so an unsuccessful setup exposes neither skill access nor bootstrap routing.
  *
- * Upstream импортируется как factory, а не регистрируется в OpenCode отдельно:
- * wrapper должен контролировать вызов transform и не допускать глобальный
- * bootstrap для агентов вне opt-in scope.
- *
- * Upstream package поставляется как JavaScript без подходящих TypeScript
- * declarations для этого export-а. `@ts-ignore` подавляет ошибку TypeScript
- * только для следующей строки; runtime-поведение импорта он не меняет.
+ * @packageDocumentation
  */
 
-// @ts-ignore
+// @ts-ignore -- The upstream package does not declare this JavaScript factory export.
 import { SuperpowersPlugin } from "superpowers"
 
 import type { Config, Hooks, Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin"
