@@ -27,6 +27,9 @@ import { dirname, join } from "node:path"
 const SUPERPOWERS_AGENT = "superpowers"
 const SUPERPOWERS_DESCRIPTION = "OpenCode with the full Superpowers workflow"
 
+/** Visible primary built-ins materialized by OpenCode after plugin config hooks. */
+const PRIMARY_BUILTIN_AGENTS = new Set(["build", "plan"])
+
 /** Service identifier attached to plugin log records. */
 const SUPERPOWERS_LOG_SERVICE = "superpowers-agent"
 
@@ -475,9 +478,12 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
       // create or augment the implicit Superpowers agent before processing all opt-ins
       configureSuperpowersAgent(draft)
 
-      // grant Superpowers access only to existing, non-disabled opt-in agents
+      // materialize selected primary built-ins, then grant access to available opt-in agents
       for (const agentName of superpowersAgentNames) {
-        const agent = draft.agent?.[agentName]
+        let agent = draft.agent?.[agentName]
+        if (!agent && PRIMARY_BUILTIN_AGENTS.has(agentName)) {
+          agent = draft.agent![agentName] = { }
+        }
         if (agent && agent.disable !== true) {
           applySkillRulesTo(agent, overrideRuleMap)
           enabledAgents.add(agentName)

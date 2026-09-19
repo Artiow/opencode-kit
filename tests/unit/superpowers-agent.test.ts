@@ -157,6 +157,36 @@ test("leaves a disabled superpowers agent unchanged and suppresses bootstrap", a
   assert.deepEqual(messages, before)
 })
 
+test("materializes selected primary built-ins without creating missing custom agents", async () => {
+  const hooks = await load({ environment: "build,plan,missing" })
+  const config: Record<string, any> = {}
+
+  await hooks.config!(config as never)
+
+  assert.equal(config.agent.build.permission.skill[BRAINSTORMING], "allow")
+  assert.equal(config.agent.plan.permission.skill[BRAINSTORMING], "allow")
+  assert.equal(config.agent.missing, undefined)
+
+  const messages = [userMessage("session", "build")]
+  const before = structuredClone(messages)
+  await transform(hooks, messages)
+  assertBootstrapAdded(before, messages)
+})
+
+test("leaves a selected disabled primary built-in unchanged", async () => {
+  const hooks = await load({ environment: "build" })
+  const disabled = { disable: true, description: "Disabled by user", permission: { bash: "ask" } }
+  const config: Record<string, any> = { agent: { build: structuredClone(disabled) } }
+
+  await hooks.config!(config as never)
+  const messages = [userMessage("session", "build")]
+  const before = structuredClone(messages)
+  await transform(hooks, messages)
+
+  assert.deepEqual(config.agent.build, disabled)
+  assert.deepEqual(messages, before)
+})
+
 test("applies tuple and strict CSV agent options", async (t) => {
   await t.test("uses tuple options when the environment is absent", async () => {
     const hooks = await load({ options: { agents: ["build"] } })

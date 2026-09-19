@@ -10,7 +10,7 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 
 ## Superpowers Agent
 
-[`plugins/superpowers-agent.ts`](plugins/superpowers-agent.ts) is a scoped wrapper around the upstream [Superpowers](https://github.com/obra/superpowers) plugin. It reuses the bundled skills and original bootstrap, but exposes them only to the generated `superpowers` agent and explicitly selected existing agents. This keeps the Superpowers workflow opt-in instead of changing the behavior of every OpenCode agent. Do not register the upstream plugin separately, because its unscoped bootstrap would bypass the wrapper.
+[`plugins/superpowers-agent.ts`](plugins/superpowers-agent.ts) is a scoped wrapper around the upstream [Superpowers](https://github.com/obra/superpowers) plugin. It reuses the bundled skills and original bootstrap, but exposes them only to the generated `superpowers` agent, selected primary built-ins, and selected configured custom agents. This keeps the Superpowers workflow opt-in instead of changing the behavior of every OpenCode agent. Do not register the upstream plugin separately, because its unscoped bootstrap would bypass the wrapper.
 
 Stow deploys the wrapper to `~/.config/opencode/plugins/`, where OpenCode discovers it automatically. The upstream package is a runtime dependency. Add the pinned dependency to the existing machine-local `~/.config/opencode/package.json`, or create the file if it does not exist:
 
@@ -30,7 +30,7 @@ The generated `superpowers` primary agent is enabled by default. To enable the s
 export OPENCODE_SUPERPOWERS_AGENTS="build,reviewer"
 ```
 
-Names are trimmed and deduplicated. Each named agent must already exist and must not be disabled in the merged OpenCode configuration; built-in agents therefore need an explicit entry such as `"agent": { "build": { } }`. An unset or empty value enables no additional agents. Restart OpenCode after changing the plugin, dependency, or environment variable because all three are loaded only at startup.
+Names are trimmed and deduplicated. The primary built-ins `build` and `plan` are enabled without requiring entries in the merged OpenCode configuration. Custom agents must already be configured, and explicitly disabled agents are ignored. An unset or empty value enables no additional agents. Restart OpenCode after changing the plugin, dependency, or environment variable because all three are loaded only at startup.
 
 ## Configuration layers
 

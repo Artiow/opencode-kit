@@ -23,13 +23,12 @@ test("auto-discovers only the wrapper", async () => {
   assert.match(config.plugin[0], /\/plugins\/superpowers-agent\.ts$/)
 })
 
-test("accepts options from explicit plugin registration", async () => {
+test("materializes a selected built-in from explicit plugin registration", async () => {
   const plugin = `file://${join(process.cwd(), "plugins", "superpowers-agent.ts")}`
   const { stdout } = await runOpenCode(["debug", "config"], {
     config: {
       $schema: "https://opencode.ai/config.json",
       plugin: [[plugin, { agents: ["build"] }]],
-      agent: { build: {} },
     },
   })
   const config = JSON.parse(stdout)
