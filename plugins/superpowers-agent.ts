@@ -12,7 +12,7 @@
  * Такое разделение не даёт wrapper-у разойтись с upstream workflow при
  * обновлениях Superpowers и оставляет здесь только политику, которой upstream
  * plugin не владеет: какие агенты получают skills и bootstrap.
- * 
+ *
  * Upstream импортируется как factory, а не регистрируется в OpenCode отдельно:
  * wrapper должен контролировать вызов transform и не допускать глобальный
  * bootstrap для агентов вне opt-in scope.
@@ -49,21 +49,28 @@ const AGENTS_ENV = "OPENCODE_SUPERPOWERS_AGENTS"
 /** Superpowers Agent plugin options. */
 type Options = { agents: string[] }
 
-/**
+/*
  * Hook types are derived from the official API declarations, so incompatible
  * OpenCode API changes are caught by typecheck.
  */
 type ConfigHook = NonNullable<Hooks["config"]>
 type TransformHook = NonNullable<Hooks["experimental.chat.messages.transform"]>
 
-
-/** Локальное имя следует официальному SDK-типу permission actions. */
+/*
+ * Together, these aliases model an ordered OpenCode permission ruleset:
+ * each entry associates a permission pattern with an SDK action and insertion
+ * order determines precedence.
+ */
 type Action = PermissionActionConfig
+type RuleMap = Record<string, Action>
 
-type SkillPermissions = Record<string, Action>
-
+/*
+ * The plugin package still derives `Config` from legacy SDK declarations,
+ * whose global and agent permission shapes omit current forms such as scalar
+ * actions and `skill` rules. These aliases replace only those stale fields
+ * with their v2 runtime types and preserve the official type everywhere else.
+ */
 type RuntimeAgentConfig = Omit<AgentConfig, "permission"> & { permission?: PermissionConfig }
-
 type RuntimeConfig = Omit<Config, "permission" | "agent"> & { permission?: PermissionConfig; agent?: Record<string, RuntimeAgentConfig> }
 
 
@@ -235,9 +242,28 @@ async function loadSuperpowers(input: PluginInput, logger: Logger): Promise<{
   }
 }
 
+/**
+ * Creates an ordered rule map that assigns the same action to every key.
+ *
+ * @param keys - Rule keys in precedence order.
+ * @param action - Permission action assigned to each key.
+ * @returns A rule map preserving the order of `keys`.
+ */
+function createRuleMap(keys: string[], action: Action): RuleMap {
+  return Object.fromEntries(keys.map((name) => [name, action]))
+}
 
-function permissions(skills: string[], action: Action): SkillPermissions {
-  return Object.fromEntries(skills.map((name) => [name, action]))
+/**
+ * Merges two normalized rule maps while preserving OpenCode's last-match-wins semantics.
+ * Overridden keys are removed from the base and appended in override order, while unrelated
+ * base rules retain their relative order.
+ *
+ * @param base - Existing rules whose unrelated entries are preserved.
+ * @param override - Rules that replace matching base entries and take final precedence.
+ * @returns A new merged rule map.
+ */
+function mergeRuleMaps(base: RuleMap, override: RuleMap): RuleMap {
+  return Object.fromEntries([...Object.entries(base).filter(([name]) => !(name in override)), ...Object.entries(override)])
 }
 
 
@@ -262,97 +288,54 @@ function normalizePermission(current: unknown, location: string): Exclude<Permis
 
 
 /**
- * Нормализует и merge-ит существующий `permission.skill` с нашими правилами.
+ * Приводит scalar shorthand `permission.skill` к единой map-форме.
  *
- * OpenCode допускает две формы permission:
- *
- *   skill: "allow"
- *
- * и granular map:
- *
- *   skill: {
- *     "*": "allow",
- *     "private-*": "deny"
- *   }
- *
- * Поэтому `current` здесь intentionally `unknown`: сначала мы проверяем его
- * runtime shape, потом приводим к единой map-форме.
- *
- * Generated rules добавляются в конец. Для OpenCode порядок granular rules
- * значим: при нескольких matching rules более позднее правило должно иметь
- * возможность переопределить более общее пользовательское wildcard-правило.
- * Wrapper владеет exact rules для всех bundled Superpowers skill names:
- * пользовательские exact keys удаляются, а generated keys добавляются после
- * всех сохранённых правил. Wildcard и unrelated rules сохраняют исходный
- * relative order; их action не ранжируются, потому что OpenCode использует
- * последнее matching rule.
+ * OpenCode допускает как `skill: "allow"`, так и granular map. Wrapper
+ * работает только с map, чтобы безопасно добавлять owned exact rules.
  */
-function mergePermissions(current: unknown, added: SkillPermissions): SkillPermissions {
-  let existing: SkillPermissions
-  if (current === undefined) existing = {}
-  else if (isAction(current)) existing = { "*": current }
-  else if (current && typeof current === "object" && !Array.isArray(current)) existing = { ...(current as SkillPermissions) }
-  else throw new Error("[superpowers-agent] permission.skill must be a permission action or object")
+function normalizeRuleMap(current: unknown): RuleMap {
+  if (current === undefined) return {}
+  if (isAction(current)) return { "*": current }
+  if (current && typeof current === "object" && !Array.isArray(current)) {
+    return { ...(current as RuleMap) }
+  }
 
-  /**
-   * Повторно добавляем owned keys в конец: одного присваивания недостаточно,
-   * потому что оно меняет value, но сохраняет прежнюю позицию ключа.
-   */
-  return Object.fromEntries([...Object.entries(existing).filter(([name]) => !(name in added)), ...Object.entries(added)])
+  throw new Error("[superpowers-agent] permission.skill must be a permission action or object")
 }
 
 
 /**
- * Добавляет global deny для всех Superpowers skills.
+ * Применяет переданные skill rules на global уровне.
  *
  * OpenCode API: `config.permission.skill`.
- * Global deny задаёт baseline для всех агентов. Configured non-enabled agents
- * дополнительно получают exact agent-level deny, потому что их локальные rules
- * способны перекрыть этот baseline.
+ * Global rules задают baseline для всех агентов. Configured non-opted-in agents
+ * дополнительно получают те же exact agent-level rules, потому что их локальные
+ * rules способны перекрыть этот baseline.
  */
-function denyGlobally(config: RuntimeConfig, denied: SkillPermissions): void {
+function applySkillRulesGlobally(config: RuntimeConfig, skillRuleMap: RuleMap): void {
   config.permission = normalizePermission(config.permission, "permission")
-  config.permission.skill = mergePermissions(config.permission.skill, denied)
+  config.permission.skill = mergeRuleMaps(normalizeRuleMap(config.permission.skill), skillRuleMap)
 }
 
 
 /**
- * Делает уже существующий OpenCode agent Superpowers-enabled на уровне skills.
+ * Применяет переданные skill rules к уже существующему non-disabled OpenCode agent.
  *
  * OpenCode API: `config.agent[name].permission.skill`.
  * Остальные настройки agent — prompt, model, temperature, другие permissions —
  * не меняются.
  */
-function enableAgent(
+function applySkillRulesToAgent(
   config: RuntimeConfig,
   name: string,
-  allowed: SkillPermissions,
+  skillRuleMap: RuleMap,
 ): boolean {
   const agent = config.agent?.[name]
   if (!agent || agent.disable === true) return false
 
   agent.permission = normalizePermission(agent.permission, `agent.${name}.permission`)
-  agent.permission.skill = mergePermissions(agent.permission.skill, allowed)
+  agent.permission.skill = mergeRuleMaps(normalizeRuleMap(agent.permission.skill), skillRuleMap)
   return true
-}
-
-
-function denyConfiguredAgents(
-  config: RuntimeConfig,
-  enabledAgents: Set<string>,
-  denied: SkillPermissions,
-): void {
-  /**
-   * Локальный exact deny нужен даже при global baseline: agent-level wildcard
-   * может иметь более высокий precedence. Disabled entries не меняем, чтобы
-   * уважать явное отключение и не переписывать dormant configuration.
-   */
-  for (const [name, agent] of Object.entries(config.agent ?? {})) {
-    if (name === SUPERPOWERS_AGENT || enabledAgents.has(name) || agent.disable === true) continue
-
-    agent.permission = normalizePermission(agent.permission, `agent.${name}.permission`)
-    agent.permission.skill = mergePermissions(agent.permission.skill, denied)
-  }
 }
 
 
@@ -428,7 +411,7 @@ function commitConfig(original: RuntimeConfig, draft: RuntimeConfig): void {
  * обычный provider/base prompt, а нам нужен стандартный OpenCode prompt плюс
  * upstream Superpowers bootstrap. Bootstrap будет добавлен другим hook-ом.
  */
-function configureSuperpowersAgent(config: RuntimeConfig, allowed: SkillPermissions): boolean {
+function configureSuperpowersAgent(config: RuntimeConfig, skillRuleMap: RuleMap): boolean {
   config.agent ??= {}
 
   const configured = config.agent[SUPERPOWERS_AGENT]
@@ -439,7 +422,7 @@ function configureSuperpowersAgent(config: RuntimeConfig, allowed: SkillPermissi
   const agent = configured ?? (config.agent[SUPERPOWERS_AGENT] = {})
   agent.mode ??= "primary"
   agent.description ??= SUPERPOWERS_DESCRIPTION
-  enableAgent(config, SUPERPOWERS_AGENT, allowed)
+  applySkillRulesToAgent(config, SUPERPOWERS_AGENT, skillRuleMap)
   return true
 }
 
@@ -484,28 +467,28 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     return { } // do not register Superpowers plugin hooks on error
   }
 
-  const capabilities = upstream.skills.filter((name) => name !== POLICY_SKILL)
+  /** Applied globally and at agent level to make access to Superpowers explicitly opt-in. */
+  const baselineRuleMap = createRuleMap(upstream.skills, "deny")
+  /** Applied to opted-in agents while leaving bootstrap delivery to the upstream transform. */
+  const overrideRuleMap = mergeRuleMaps(createRuleMap(upstream.skills, "allow"), { [POLICY_SKILL]: "deny" })
 
   /**
-   * Baseline: exact deny наследуется всеми агентами. Для configured agents ниже
-   * добавляются agent-level deny, чтобы их правила не перекрыли baseline.
-   */
-  const denied = permissions(upstream.skills, "deny")
-
-  /**
-   * Для enabled agents разрешаем capabilities, но `using-superpowers` оставляем
-   * deny: policy загружает upstream transform, когда история подходит для
-   * injection; явная повторная загрузка через native `skill` tool не нужна.
-   */
-  const enabled: SkillPermissions = { ...permissions(capabilities, "allow"), [POLICY_SKILL]: "deny" }
-
-  /**
-   * Одно и то же множество используется для access-control и bootstrap scope.
-   * Это исключает состояние "skills разрешены, но bootstrap не включён".
+   * Shares the successfully configured agent set with the transform hook,
+   * ensuring bootstrap injection follows the committed permission state.
    */
   const enabledAgents = new Set<string>()
 
-  // TODO: docstring о том, что это за функция и зачем
+  /**
+   * Applies the Superpowers integration when OpenCode initializes plugins for a directory instance.
+   *
+   * OpenCode invokes this hook after loading the mutable effective configuration
+   * and before materializing built-in agents. It stages upstream skill-path
+   * registration, permission rules, and the dedicated agent on a clone, then
+   * commits the resulting configuration and publishes the corresponding bootstrap
+   * scope. Setup failures discard staged changes and disable bootstrap routing.
+   *
+   * @param config - Mutable effective configuration for the current directory instance.
+   */
   const configHook: ConfigHook = async (config) => {
     const runtimeConfig = config as RuntimeConfig
 
@@ -524,10 +507,13 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * Накладываем access-control после upstream, чтобы wrapper имел последнее
        * слово по owned skill permissions независимо от добавленных upstream rules.
        */
-      denyGlobally(draft, denied)
+      applySkillRulesGlobally(draft, baselineRuleMap)
 
-      const explicitlyEnabled = new Set(options.agents)
-      denyConfiguredAgents(draft, explicitlyEnabled, denied)
+      const requestedAgentNames = new Set(options.agents)
+      for (const agentName of Object.keys(draft.agent ?? {})) {
+        if (agentName === SUPERPOWERS_AGENT || requestedAgentNames.has(agentName)) continue
+        applySkillRulesToAgent(draft, agentName, baselineRuleMap)
+      }
 
       const nextEnabledAgents = new Set<string>()
 
@@ -536,10 +522,10 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * global deny только для существующего explicit opt-in. Отсутствующее имя
        * игнорируется и не создаёт новый agent из возможной опечатки.
        */
-      for (const agent of options.agents) {
-        if (enableAgent(draft, agent, enabled)) nextEnabledAgents.add(agent)
+      for (const agentName of options.agents) {
+        if (applySkillRulesToAgent(draft, agentName, overrideRuleMap)) nextEnabledAgents.add(agentName)
       }
-      if (configureSuperpowersAgent(draft, enabled)) {
+      if (configureSuperpowersAgent(draft, overrideRuleMap)) {
         nextEnabledAgents.add(SUPERPOWERS_AGENT)
       }
 
@@ -576,7 +562,7 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     }
   }
 
-  return { config: configHook, "experimental.chat.messages.transform": transformHook }
+  return { "config": configHook, "experimental.chat.messages.transform": transformHook }
 }
 
 export default SuperpowersAgentPlugin
