@@ -61,6 +61,92 @@ test("disables the plugin and logs an error for an invalid policy asset", async 
   assert.ok(levels.includes("error"))
 })
 
+test("commits config changes while preserving stable references", async () => {
+  const { stdout } = await runIsolatedPlugin(`
+    const plugin = (await import(PLUGIN_URL)).default
+    const hooks = await plugin({ directory: process.cwd() })
+    const retained = { value: true }
+    const superpowers = { custom: retained }
+    const untouched = { value: true }
+    const config = { agent: { superpowers }, untouched }
+    const root = config
+    const agents = config.agent
+
+    await hooks.config(config)
+
+    console.log(JSON.stringify({
+      rootPreserved: config === root,
+      agentsReplaced: config.agent !== agents,
+      superpowersReplaced: config.agent.superpowers !== superpowers,
+      nestedPreserved: config.agent.superpowers.custom === retained,
+      untouchedPreserved: config.untouched === untouched,
+      permissionsApplied: config.agent.superpowers.permission.skill.brainstorming === "allow",
+    }))
+  `, { provisionDependencies: true })
+
+  assert.deepEqual(JSON.parse(stdout), {
+    rootPreserved: true,
+    agentsReplaced: true,
+    superpowersReplaced: true,
+    nestedPreserved: true,
+    untouchedPreserved: true,
+    permissionsApplied: true,
+  })
+})
+
+test("rejects an uncommittable config before publishing staged changes", async () => {
+  const { stdout } = await runIsolatedPlugin(`
+    const logs = []
+    const client = { app: { log: async ({ body }) => logs.push(body) } }
+    const plugin = (await import(PLUGIN_URL)).default
+    const hooks = await plugin({ directory: process.cwd(), client })
+    const agent = {}
+    const permission = { bash: "ask" }
+    const permissionBefore = structuredClone(permission)
+    const config = { permission }
+    Object.defineProperty(config, "agent", {
+      configurable: true,
+      enumerable: true,
+      value: agent,
+      writable: false,
+    })
+
+    await hooks.config(config)
+
+    const messages = [{
+      info: {
+        id: "user",
+        sessionID: "session",
+        role: "user",
+        time: { created: 1 },
+        agent: "superpowers",
+        model: { providerID: "test", modelID: "test" },
+      },
+      parts: [{ id: "part", sessionID: "session", messageID: "user", type: "text", text: "hello" }],
+    }]
+    const before = structuredClone(messages)
+    await hooks["experimental.chat.messages.transform"]({}, { messages })
+
+    console.log(JSON.stringify({
+      configKeys: Object.keys(config),
+      permissionPreserved: config.permission === permission,
+      permissionUnchanged: JSON.stringify(config.permission) === JSON.stringify(permissionBefore),
+      agentPreserved: config.agent === agent,
+      messagesUnchanged: JSON.stringify(messages) === JSON.stringify(before),
+      error: logs.find(({ level }) => level === "error")?.extra?.error,
+    }))
+  `, { provisionDependencies: true })
+
+  assert.deepEqual(JSON.parse(stdout), {
+    configKeys: ["permission", "agent"],
+    permissionPreserved: true,
+    permissionUnchanged: true,
+    agentPreserved: true,
+    messagesUnchanged: true,
+    error: "Cannot replace config.agent",
+  })
+})
+
 test("runs the installed wrapper transform for enabled user metadata", async () => {
   const { stdout } = await runIsolatedPlugin(`
     const plugin = (await import(PLUGIN_URL)).default
