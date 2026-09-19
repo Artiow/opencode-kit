@@ -271,21 +271,19 @@ function isAction(value: unknown): value is Action {
   return value === "allow" || value === "ask" || value === "deny"
 }
 
-
 /**
  * Приводит scalar shorthand к map, потому что wrapper должен добавить owned
  * skill rules, не потеряв действие пользователя для остальных permissions.
  */
-function normalizePermission(current: unknown, location: string): Exclude<PermissionConfig, PermissionActionConfig> {
+function normalizePermission(current: unknown): Exclude<PermissionConfig, PermissionActionConfig> {
   if (current === undefined) return {}
   if (isAction(current)) return { "*": current }
   if (current && typeof current === "object" && !Array.isArray(current)) {
     return current as Exclude<PermissionConfig, PermissionActionConfig>
   }
 
-  throw new Error(`[superpowers-agent] ${location} must be a permission action or object`)
+  throw new Error("[superpowers-agent] permission must be a permission action or object")
 }
-
 
 /**
  * Приводит scalar shorthand `permission.skill` к единой map-форме.
@@ -303,39 +301,17 @@ function normalizeRuleMap(current: unknown): RuleMap {
   throw new Error("[superpowers-agent] permission.skill must be a permission action or object")
 }
 
-
 /**
- * Применяет переданные skill rules на global уровне.
+ * Applies skill permission rules to a global or agent config in place.
+ * Preserves unrelated rules and gives supplied rules precedence over matching entries.
  *
- * OpenCode API: `config.permission.skill`.
- * Global rules задают baseline для всех агентов. Configured non-opted-in agents
- * дополнительно получают те же exact agent-level rules, потому что их локальные
- * rules способны перекрыть этот baseline.
+ * @param target - Configuration object whose skill permissions are updated.
+ * @param skillRuleMap - Ordered skill permission rules to apply.
+ * @throws When the existing permission or skill rule has an unsupported shape.
  */
-function applySkillRulesGlobally(config: RuntimeConfig, skillRuleMap: RuleMap): void {
-  config.permission = normalizePermission(config.permission, "permission")
-  config.permission.skill = mergeRuleMaps(normalizeRuleMap(config.permission.skill), skillRuleMap)
-}
-
-
-/**
- * Применяет переданные skill rules к уже существующему non-disabled OpenCode agent.
- *
- * OpenCode API: `config.agent[name].permission.skill`.
- * Остальные настройки agent — prompt, model, temperature, другие permissions —
- * не меняются.
- */
-function applySkillRulesToAgent(
-  config: RuntimeConfig,
-  name: string,
-  skillRuleMap: RuleMap,
-): boolean {
-  const agent = config.agent?.[name]
-  if (!agent || agent.disable === true) return false
-
-  agent.permission = normalizePermission(agent.permission, `agent.${name}.permission`)
-  agent.permission.skill = mergeRuleMaps(normalizeRuleMap(agent.permission.skill), skillRuleMap)
-  return true
+function applySkillRulesTo(target: { permission?: PermissionConfig }, skillRuleMap: RuleMap): void {
+  target.permission = normalizePermission(target.permission)
+  target.permission.skill = mergeRuleMaps(normalizeRuleMap(target.permission.skill), skillRuleMap)
 }
 
 
@@ -422,7 +398,7 @@ function configureSuperpowersAgent(config: RuntimeConfig, skillRuleMap: RuleMap)
   const agent = configured ?? (config.agent[SUPERPOWERS_AGENT] = {})
   agent.mode ??= "primary"
   agent.description ??= SUPERPOWERS_DESCRIPTION
-  applySkillRulesToAgent(config, SUPERPOWERS_AGENT, skillRuleMap)
+  applySkillRulesTo(agent, skillRuleMap)
   return true
 }
 
@@ -495,24 +471,16 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
     try {
       const draft = structuredClone(runtimeConfig)
 
-      /**
-       * Делегируем upstream его собственную регистрацию skills path.
-       *
-       * Upstream знает собственный package layout и добавляет свой `skills/`
-       * в `config.skills.paths`.
-       */
+      // let upstream register its bundled skills path on the draft
       await upstream.configHook(draft as Config)
 
-      /**
-       * Накладываем access-control после upstream, чтобы wrapper имел последнее
-       * слово по owned skill permissions независимо от добавленных upstream rules.
-       */
-      applySkillRulesGlobally(draft, baselineRuleMap)
+      // apply the global baseline after upstream so the wrapper has final precedence
+      applySkillRulesTo(draft, baselineRuleMap)
 
       const requestedAgentNames = new Set(options.agents)
-      for (const agentName of Object.keys(draft.agent ?? {})) {
-        if (agentName === SUPERPOWERS_AGENT || requestedAgentNames.has(agentName)) continue
-        applySkillRulesToAgent(draft, agentName, baselineRuleMap)
+      for (const [agentName, agent] of Object.entries(draft.agent ?? {})) {
+        if (agentName === SUPERPOWERS_AGENT || requestedAgentNames.has(agentName) || agent.disable === true) continue
+        applySkillRulesTo(agent, baselineRuleMap)
       }
 
       const nextEnabledAgents = new Set<string>()
@@ -523,7 +491,11 @@ const SuperpowersAgentPlugin: Plugin = async (input, rawOptions) => {
        * игнорируется и не создаёт новый agent из возможной опечатки.
        */
       for (const agentName of options.agents) {
-        if (applySkillRulesToAgent(draft, agentName, overrideRuleMap)) nextEnabledAgents.add(agentName)
+        const agent = draft.agent?.[agentName]
+        if (!agent || agent.disable === true) continue
+
+        applySkillRulesTo(agent, overrideRuleMap)
+        nextEnabledAgents.add(agentName)
       }
       if (configureSuperpowersAgent(draft, overrideRuleMap)) {
         nextEnabledAgents.add(SUPERPOWERS_AGENT)
