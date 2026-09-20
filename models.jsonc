@@ -20,7 +20,7 @@
     },
 
     // subagents
-    "git-commit": {
+    "git": {
       "model": "{env:OPENCODE_MODEL_UTILITY}",
       "variant": "low"
     },

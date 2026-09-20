@@ -31,6 +31,7 @@ Configuration precedence is low to high:
 ```
 
 - `models.jsonc` is deployed as `~/.config/opencode/models.jsonc`. Keep model IDs out of Git and reference `OPENCODE_MODEL_FLAGSHIP`, `OPENCODE_MODEL_UTILITY`, and `OPENCODE_MODEL_LIGHT` through `{env:...}`.
+- When renaming or removing an OpenCode resource, search all managed resources and config layers for the old name. Verify the resolved config contains the new name but not the old one, and filter `opencode debug config` output because it may expose secrets.
 - Concrete model IDs and files containing environment values are local; never add them to Git or Stow.
 - Root `opencode.jsonc` contains portable shared settings. `.opencode/opencode.json(c)` is a Git-ignored local override and must not duplicate shared settings.
 - Neither project config is deployed globally: `.stow-local-ignore` must exclude root `opencode.jsonc` and all of `.opencode/`.
