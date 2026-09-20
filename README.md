@@ -12,12 +12,18 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 
 [`plugins/superpowers-agent.ts`](plugins/superpowers-agent.ts) is a scoped wrapper around the upstream [Superpowers](https://github.com/obra/superpowers) plugin. It reuses the bundled skills and original bootstrap, but exposes them only to the generated `superpowers` agent, selected primary built-ins, and selected configured custom agents. This keeps the Superpowers workflow opt-in instead of changing the behavior of every OpenCode agent. Do not register the upstream plugin separately, because its unscoped bootstrap would bypass the wrapper.
 
+Bootstrap routing is evaluated for every model request rather than fixed for the lifetime of a session. The wrapper reads the active agent from the latest user message and delegates to the upstream transform only when that agent is enabled; otherwise, it leaves the messages unchanged. Switching agents within the same session therefore takes effect on the next request: an agent receives the Superpowers bootstrap and skill access only when enabled.
+
+The upstream transform itself is agent-agnostic for top-level sessions: it prepends the cached `using-superpowers` bootstrap and OpenCode tool mappings to the first user message, while a marker prevents duplicate injection. It detects delegated child sessions by their `parentID` and skips bootstrap injection for them. This wrapper additionally scopes both the transform and skill permissions, so standard `general` and `explore` subagents receive neither by default; explicitly configured and enabled subagents can access the skills, but their child sessions still do not receive the bootstrap.
+
+This injection does not replace an agent's configured prompt. OpenCode retains that prompt in the system instructions, while the transform adds the bootstrap as user-message content; the original prompt therefore remains intact and keeps system-level precedence if the instructions conflict.
+
 Stow deploys the wrapper to `~/.config/opencode/plugins/`, where OpenCode discovers it automatically. The upstream package is a runtime dependency. Add the pinned dependency to the existing machine-local `~/.config/opencode/package.json`, or create the file if it does not exist:
 
 ```json
 {
   "dependencies": {
-    "superpowers": "github:obra/superpowers#v6.3.0"
+    "superpowers": "github:obra/superpowers#v6.4.1"
   }
 }
 ```
