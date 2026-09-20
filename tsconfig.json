@@ -12,6 +12,7 @@
   "include": [
     "tools/**/*.ts",
     "plugins/**/*.ts",
-    ".opencode/**/*.ts"
+    ".opencode/**/*.ts",
+    "tests/**/*.ts"
   ]
 }
