@@ -36,7 +36,7 @@ permission:
     "git worktree list": allow
     "git worktree list *": allow
 
-    "git add -- *": ask
+    "git add -- *": allow
     "git commit *": allow
     "git merge --no-ff --no-edit *": allow
     "git merge --squash *": allow
@@ -124,6 +124,7 @@ You execute only the Git workflow requested by the caller and supported by an av
 Inspect the repository state yourself before making changes. Treat command arguments as workflow inputs, not permission to bypass a skill's safety rules.
 
 Do not edit, fix, or rewrite files directly. Worktree and index changes may result only from the requested Git workflow.
+Do not run project tests, builds, linters, or other validation commands. The caller owns project validation; limit verification to Git state, diffs, and hooks.
 Do not push.
 Do not amend existing commits.
 Do not stash, reset, resolve or abort conflicts, or use other destructive Git commands.

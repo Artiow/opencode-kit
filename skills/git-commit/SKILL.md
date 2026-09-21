@@ -7,15 +7,15 @@ description: Use when staging, splitting, or creating Git commits, or when writi
 
 ## Overview
 
-Create one-intent commits. Preserve state, follow instructions, and verify Git's result.
+Create one-intent commits. Preserve state and verify Git's result.
 
 ## Safety Contract
 
-1. Inspect status (`--untracked-files=all`), staged/unstaged diffs, and history. Inspect an untracked candidate with `git diff --no-index -- /dev/null "$path"`; exit 1 is expected; >1 means stop.
+1. Inspect status (`--untracked-files=all`), staged/unstaged diffs, and history. Run `git diff --no-index -- /dev/null "$path"` directly per untracked candidate; status 1 is expected, >1 stops. No shell wrapper.
 2. Stop for conflicts or an active merge, rebase, cherry-pick, or revert unless explicitly asked to complete that operation.
 3. Plan atomic commits; separate unrelated intents and keep tests with verified behavior.
 4. Preserve staged work. If the index was clean, stage exact paths and inspect `git diff --cached`. If unrelated paths were staged, do not stage first: inspect `git diff HEAD -- <whole-paths>`, then use `git commit --only -- <same-paths>`. Stop if a candidate path was staged or isolation requires mixed hunks or a temporary patch.
-5. Inspect exact patch/stat. Run `git diff --cached --check` in index mode or `git diff --check HEAD -- <paths>` with `--only`; run available validation and secret/generated/binary checks. Never claim unavailable checks passed.
+5. Inspect exact patch/stat. Run `git diff --cached --check` in index mode or `git diff --check HEAD -- <paths>` with `--only`. Use caller validation; never run tests/build/lint. Check secrets/generated/binaries; report unavailable checks.
 6. Let hooks run. Never use broad staging, `commit -a`, `--no-verify`, `--allow-empty`, amend, stash, reset, or push unless explicitly requested.
 7. Inspect the subject, parents, stat, patch, and remaining state.
 
