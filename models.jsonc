@@ -20,9 +20,9 @@
     },
 
     // subagents
-    "git-commit": {
+    "git": {
       "model": "{env:OPENCODE_MODEL_UTILITY}",
-      "variant": "default"
+      "variant": "low"
     },
     "web-research": {
       "model": "{env:OPENCODE_MODEL_FLAGSHIP}",

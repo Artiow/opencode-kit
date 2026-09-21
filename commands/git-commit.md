@@ -1,11 +1,9 @@
 ---
 description: Create focused Git commits from the current working tree
-agent: git-commit
+agent: git
 subtask: true
 ---
 
-Create one or more appropriate commits from the current working tree.
-
-Additional instructions from the user:
+Load `git-commit` and create focused commits from the current working tree. Treat the arguments as additional instructions.
 
 $ARGUMENTS
