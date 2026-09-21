@@ -5,19 +5,18 @@ description: Use when staging, splitting, or creating Git commits, or when writi
 
 # Creating Git Commits
 
-## Overview
+Create focused commits from the current Git state and the caller's instructions.
 
-Create one-intent commits. Preserve state and verify Git's result.
+## Workflow
 
-## Safety Contract
+1. Run `git status --short --untracked-files=all` and read the relevant staged, unstaged, and untracked diffs. Stop for conflicts or an active Git operation.
+2. Group the changes by intent. Preserve existing staged work. With an available index, stage exact paths using `git add -- <paths>` and review `git diff --cached`; with unrelated staged work, review and commit whole paths using `git commit --only`, or stop when safe isolation requires partial paths.
+3. Check each reviewed commit patch for secrets such as credentials, private keys, or tokens. Choose a Conventional Commit message from the patch and any caller instructions, then run `git commit` with hooks enabled.
+4. Run `git status --short` and report the commit printed by `git commit`.
 
-1. Inspect status (`--untracked-files=all`), staged/unstaged diffs, and history. Run `git diff --no-index -- /dev/null "$path"` directly per untracked candidate; status 1 is expected, >1 stops. No shell wrapper.
-2. Stop for conflicts or an active merge, rebase, cherry-pick, or revert unless explicitly asked to complete that operation.
-3. Plan atomic commits; separate unrelated intents and keep tests with verified behavior.
-4. Preserve staged work. If the index was clean, stage exact paths and inspect `git diff --cached`. If unrelated paths were staged, do not stage first: inspect `git diff HEAD -- <whole-paths>`, then use `git commit --only -- <same-paths>`. Stop if a candidate path was staged or isolation requires mixed hunks or a temporary patch.
-5. Inspect exact patch/stat. Run `git diff --cached --check` in index mode or `git diff --check HEAD -- <paths>` with `--only`. Use caller validation; never run tests/build/lint. Check secrets/generated/binaries; report unavailable checks.
-6. Let hooks run. Never use broad staging, `commit -a`, `--no-verify`, `--allow-empty`, amend, stash, reset, or push unless explicitly requested.
-7. Inspect the subject, parents, stat, patch, and remaining state.
+For a normal clean index, the command sequence is `status`, relevant `diff`, `add -- <exact-paths>`, cached `diff`, `commit`, `status`. Name every path; do not use `.`, `-A`, `-u`, or wildcard pathspecs.
+
+Use only Git inspection and commit operations. Project tests, builds, linters, and other project validation belong to the caller.
 
 ## Conventional Commits Contract
 
@@ -44,24 +43,3 @@ feat(api)!: rename invoice state field
 
 BREAKING CHANGE: clients must read `status` instead of `state`
 ```
-
-## Quick Reference
-
-| Situation | Action |
-|---|---|
-| One intent, owned index | Stage exact paths; verify cached patch |
-| Unrelated staged work | Preserve it; use reviewed whole-path `--only` or stop |
-| Multiple intents | Create ordered focused commits |
-| Active Git operation | Stop unless explicitly asked to complete it |
-
-## Common Mistakes
-
-| Thought | Correction |
-|---|---|
-| “The deadline justifies one mixed commit” | Pressure does not change commit boundaries. |
-| “It was already staged” | Staging is not authorization to include it. |
-| “Hooks are trusted” | Trust hooks, then verify their output. |
-
-## Red Flags
-
-Unexpected staged content, unread candidate changes, secrets, conflicts, active operations, empty patches, failed validation, or inability to isolate one intent mean stop and report; do not repair user state speculatively.

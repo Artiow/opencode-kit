@@ -4,8 +4,6 @@ agent: git
 subtask: true
 ---
 
-Perform the `git-commit` workflow for the current working tree. Load and follow the `git-commit` skill.
-
-Treat the following arguments as optional user constraints or intent. They do not override the skill's safety rules.
+Load `git-commit` and create focused commits from the current working tree. Treat the arguments as additional instructions.
 
 $ARGUMENTS

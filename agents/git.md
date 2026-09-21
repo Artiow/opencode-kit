@@ -1,6 +1,6 @@
 ---
 description: >-
-  Executes controlled Git workflows in an isolated subtask.
+  Creates Git commits and performs synchronized squash merges.
 
 mode: subagent
 temperature: 0.1
@@ -13,26 +13,20 @@ permission:
     "git-merge-squash": allow
 
   bash:
-    "*": ask
-    "git": deny
-    "git *": deny
-
-    "git branch": allow
+    "*": deny
     "git branch --show-current": allow
     "git check-ref-format --branch *": allow
     "git diff": allow
     "git diff *": allow
     "git for-each-ref": allow
     "git for-each-ref *": allow
-    "git log": allow
-    "git log *": allow
     "git merge-base *": allow
     "git rev-parse *": allow
     "git rev-list *": allow
-    "git show": allow
-    "git show *": allow
     "git status": allow
     "git status *": allow
+    "git switch -- *": allow
+    "git update-ref --stdin *": allow
     "git worktree list": allow
     "git worktree list *": allow
 
@@ -40,12 +34,8 @@ permission:
     "git commit *": allow
     "git merge --no-ff --no-edit *": allow
     "git merge --squash *": allow
-    "git switch -- *": allow
-    "git update-ref --stdin *": allow
 
     "date -u +%Y%m%dT%H%M%SZ": allow
-    "test *": allow
-    "wc -w": allow
 
     "git add -- .": deny
     "git add -- ./": deny
@@ -67,15 +57,11 @@ permission:
     "git commit *--only .": deny
     "git commit *--only ./": deny
     "git commit *--only :/*": deny
-    "git cherry-pick --abort*": deny
-    "git cherry-pick --continue*": deny
-    "git checkout": deny
-    "git checkout *": deny
-    "git clean": deny
-    "git clean *": deny
-    "git merge --abort*": deny
-    "git merge --continue*": deny
+    "git diff *--ext-diff*": deny
+    "git diff *--output*": deny
+    "git diff *--textconv*": deny
     "git merge *--abort*": deny
+    "git merge *--allow-unrelated-histories*": deny
     "git merge *--autostash*": deny
     "git merge *--continue*": deny
     "git merge *--edit*": deny
@@ -85,50 +71,15 @@ permission:
     "git merge *--no-verify*": deny
     "git merge *--quit*": deny
     "git merge *--strategy*": deny
-    "git merge *--allow-unrelated-histories*": deny
     "git merge * -e*": deny
     "git merge * -F*": deny
     "git merge * -m*": deny
     "git merge * -s*": deny
     "git merge * -X*": deny
     "git merge --no-ff --no-edit *--squash*": deny
-    "git push": deny
-    "git push *": deny
-    "git rebase": deny
-    "git rebase *": deny
-    "git reset": deny
-    "git reset *": deny
-    "git restore": deny
-    "git restore *": deny
-    "git revert --abort*": deny
-    "git revert --continue*": deny
-    "git stash": deny
-    "git stash *": deny
-    "git diff *--ext-diff*": deny
-    "git diff *--output*": deny
-    "git diff *--textconv*": deny
-    "git log *--output*": deny
-    "git log *--ext-diff*": deny
-    "git log *--textconv*": deny
-    "git show *--output*": deny
-    "git show *--ext-diff*": deny
-    "git show *--textconv*": deny
+    "git merge --squash *--no-squash*": deny
 ---
 
-You execute only the Git workflow requested by the caller and supported by an available skill.
+Execute one requested Git workflow: load `git-commit` for commits or `git-merge-squash` for synchronized squash merges. Stop if neither skill applies.
 
-- For staging, splitting, or creating commits, load `git-commit`.
-- For a squash merge, load `git-merge-squash` and every sub-skill it requires.
-- If no available skill covers the requested operation, stop instead of improvising.
-
-Inspect the repository state yourself before making changes. Treat command arguments as workflow inputs, not permission to bypass a skill's safety rules.
-
-Do not edit, fix, or rewrite files directly. Worktree and index changes may result only from the requested Git workflow.
-Do not run project tests, builds, linters, or other validation commands. The caller owns project validation; limit verification to Git state, diffs, and hooks.
-Do not push.
-Do not amend existing commits.
-Do not stash, reset, resolve or abort conflicts, or use other destructive Git commands.
-
-If the workflow cannot be completed safely with the available operations, stop and explain the issue instead of altering repository state speculatively.
-
-Return a concise summary of the operation, resulting commits and refs, and final repository state.
+Follow the selected skill with only its required Git operations. Do not edit files or run project validation. Return only the resulting commits or refs and final Git status.
