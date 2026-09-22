@@ -31,7 +31,7 @@ Configuration precedence is low to high:
 ```
 
 - `models.jsonc` is deployed as `~/.config/opencode/models.jsonc`. Keep model IDs out of Git and reference `OPENCODE_MODEL_FLAGSHIP`, `OPENCODE_MODEL_UTILITY`, and `OPENCODE_MODEL_LIGHT` through `{env:...}`.
-- When renaming or removing an OpenCode resource, search all managed resources and config layers for the old name. Verify the resolved config contains the new name but not the old one, and filter `opencode debug config` output because it may expose secrets.
+- When renaming or removing an OpenCode resource, search all managed resources and config layers for the old name. Verify the result with `opencode debug config` and, for skills, `opencode debug skill`; filter config output because it may expose secrets.
 - Concrete model IDs and files containing environment values are local; never add them to Git or Stow.
 - Root `opencode.jsonc` contains portable shared settings. `.opencode/opencode.json(c)` is a Git-ignored local override and must not duplicate shared settings.
 - Neither project config is deployed globally: `.stow-local-ignore` must exclude root `opencode.jsonc` and all of `.opencode/`.
@@ -39,7 +39,8 @@ Configuration precedence is low to high:
 ## TypeScript
 
 - Use npm and update `package.json` and `package-lock.json` together.
-- Run `npm run typecheck` after changing TypeScript under `tools/`, `plugins/`, or `.opencode/`.
+- Run `npm run typecheck` after changing TypeScript included by `tsconfig.json`, including tests.
+- Run `npm test` after changing plugins or their tests.
 - Before adding runtime dependencies to global resources, check the dependency-loading guidance in `customize-opencode`.
 
 ## Stow
@@ -52,9 +53,9 @@ Configuration precedence is low to high:
 stow -n -v -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
 ```
 
-- Content-only changes to existing managed files or excluded paths do not require a dry-run.
+- Content-only changes do not require a standalone topology dry-run, but every deployment must still be preceded by the preview above.
 - Investigate every conflict or unexpected link operation; never use `stow --adopt` automatically or overwrite unmanaged files.
-- Deploy only when explicitly asked, with:
+- Deploy only when explicitly asked. Prefer the complete clean-worktree workflow in `.opencode/commands/stow-deploy.md`; its deployment step is:
 
 ```sh
 stow -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
@@ -63,4 +64,5 @@ stow -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
 ## Validation
 
 - Run `git diff --check` and review `git diff` before finishing.
+- The restricted `git` subagent runs only its selected Git workflow; its caller owns project validation before delegation.
 - Do not commit a known-invalid or conflicting state unless explicitly asked to bypass validation.
