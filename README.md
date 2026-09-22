@@ -5,12 +5,12 @@ Version-controlled global OpenCode extensions deployed under `~/.config/opencode
 ## Preconditions
 
 - [GNU Stow](https://www.gnu.org/software/stow/) is required to deploy the global resources.
-- Configure [`nickclyde/duckduckgo-mcp-server`](https://github.com/nickclyde/duckduckgo-mcp-server) globally as `duckduckgo`; project agents depend on it. This repository only enables the server and does not configure its installation or launch.
+- Configure [`nickclyde/duckduckgo-mcp-server`](https://github.com/nickclyde/duckduckgo-mcp-server) globally as `duckduckgo`; the `web-research` agent uses it directly, while `insight` delegates external research to that agent. This repository only enables the server and does not configure its installation or launch.
 - Declare [`obra/superpowers`](https://github.com/obra/superpowers) as a dependency in the global `~/.config/opencode/package.json`, as described below.
 
 ## Superpowers Agent
 
-[`plugins/superpowers-agent.ts`](plugins/superpowers-agent.ts) is a scoped wrapper around the upstream [Superpowers](https://github.com/obra/superpowers) plugin. It reuses the bundled skills and original bootstrap, but exposes them only to the generated `superpowers` agent, selected primary built-ins, and selected configured custom agents. This keeps the Superpowers workflow opt-in instead of changing the behavior of every OpenCode agent. Do not register the upstream plugin separately, because its unscoped bootstrap would bypass the wrapper.
+[`plugins/superpowers-agent.ts`](plugins/superpowers-agent.ts) is a scoped wrapper around the upstream [Superpowers](https://github.com/obra/superpowers) plugin. It reuses the bundled skills and original bootstrap, but exposes them only to the generated `superpowers` agent, selected primary built-ins, and selected configured custom agents. The `using-superpowers` policy is injected by the bootstrap and remains unavailable through the native skill tool. This keeps the workflow opt-in instead of changing the behavior of every OpenCode agent. Do not register the upstream plugin separately, because its unscoped bootstrap would bypass the wrapper.
 
 Bootstrap routing is evaluated for every model request rather than fixed for the lifetime of a session. The wrapper reads the active agent from the latest user message and delegates to the upstream transform only when that agent is enabled; otherwise, it leaves the messages unchanged. Switching agents within the same session therefore takes effect on the next request: an agent receives the Superpowers bootstrap and skill access only when enabled.
 
@@ -30,7 +30,7 @@ Stow deploys the wrapper to `~/.config/opencode/plugins/`, where OpenCode discov
 
 OpenCode installs dependencies from this file at startup. The global `package.json` and its `node_modules` remain unmanaged and must not be added to this repository.
 
-The generated `superpowers` primary agent is enabled by default. To enable the same workflow for additional agents, set `OPENCODE_SUPERPOWERS_AGENTS` to their comma-separated names before starting OpenCode:
+Unless explicitly disabled in configuration, the generated `superpowers` primary agent is enabled by default. To enable the same workflow for additional agents, set `OPENCODE_SUPERPOWERS_AGENTS` to their comma-separated names before starting OpenCode:
 
 ```sh
 export OPENCODE_SUPERPOWERS_AGENTS="build,reviewer"
@@ -40,7 +40,7 @@ Names are trimmed and deduplicated. The primary built-ins `build` and `plan` are
 
 ## Configuration layers
 
-Machine-specific settings such as `server` and `mcp` remain in the unmanaged `~/.config/opencode/opencode.jsonc` and must not be added to this repository.
+Machine-specific settings such as `server` and MCP installation or launch configuration remain in the unmanaged `~/.config/opencode/opencode.jsonc`. Portable project settings, including enabling an inherited MCP server, may live in the committed project config.
 
 This repository also has two project-only configuration layers:
 
@@ -70,9 +70,11 @@ OPENCODE_MODEL_LIGHT="<provider>/<model>"
 
 `models.jsonc` maps agents and model settings to these capability tiers through `{env:...}` interpolation. Actual model IDs and environment values remain local.
 
-Top-level resource directories such as `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` are deployed globally. Resources under `.opencode/` apply only to this repository, and the directory is excluded from Stow. The root `opencode.jsonc` is also excluded from Stow.
+Top-level `agents/`, `skills/`, `commands/`, and `plugins/` are deployed globally. The current resources provide the `insight`, `web-research`, and restricted `git` agents plus matching Git workflow commands and skills. Resources under `.opencode/`, including `/stow-deploy` and `opencode-log-inspection`, apply only to this repository; the directory and root `opencode.jsonc` are excluded from Stow.
 
 ## Stow
+
+For a clean worktree, the project-local `/stow-deploy` command runs tests, previews deployment, deploys, and validates the resolved config and skills. The manual Stow preview and deployment steps are below.
 
 Preview deployment from the repository root:
 
