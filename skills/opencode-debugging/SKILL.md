@@ -31,6 +31,7 @@ Ordinary application bugs and planned configuration changes without a diagnostic
 | Config, agent, skill, command, plugin, tool, or MCP mismatch | [Runtime diagnostics](references/runtime.md) |
 | What a session or subagent received, did, or returned | [Session investigation](references/sessions.md) |
 | A specific runtime event requires log evidence | [Bounded log inspection](references/log-inspection.md), **before reading logs** |
+| An explicitly requested standalone local server restart | [Restart helper](references/runtime.md#restart-helper) |
 
 Use known paths and IDs. Delegate only concrete independent questions, pass exact identifiers, and avoid recursive rediscovery. Logs and full session exports are not mandatory first steps.
 

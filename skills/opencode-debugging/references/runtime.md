@@ -53,3 +53,24 @@ Do not add duplicate settings or disable plugins without evidence.
    establish an `allow` decision. Recheck ordering after moving settings between scopes.
 4. Reproduce the original invocation in the reloaded process. Report whether only
    rules were inspected or the operation actually succeeded.
+
+## Restart Helper
+
+For an explicitly requested restart of a standalone local Linux `opencode serve`,
+use the [helper](../scripts/restart-server.mjs) with Node.js 22+ and `ss`:
+
+```sh
+node "$HOME/.config/opencode/skills/opencode-debugging/scripts/restart-server.mjs" http://127.0.0.1:4096 SESSION_ID
+```
+
+Replace the URL and session ID. The helper derives the directory, agent, and model
+from the session. On `{"status":"armed",...}`, **finish your response immediately**
+so the session can become idle. It waits up to 180 seconds for idle, pauses one
+second, rechecks, and restarts once with the original arguments, cwd, and environment.
+Resumed activity cancels the restart. After health verification, it submits the
+result as a new prompt in the same session using the saved agent/model.
+
+CLI and bot processes are untouched. There is no status file or retry of the
+restart or notification. Preflight failures return a nonzero exit code; failures
+after arming are reported through the session if reachable. If the server remains
+down, no session notification can be delivered.
