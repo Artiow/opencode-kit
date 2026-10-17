@@ -4,7 +4,9 @@
 ^/\.gitignore$
 ^/\.ignore$
 ^/\.opencode$
+^/\.superpowers$
 ^/AGENTS\.md$
+^/LICENSE$
 ^/README\.md$
 ^/node_modules$
 ^/opencode\.jsonc$
