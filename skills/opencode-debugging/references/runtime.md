@@ -60,11 +60,12 @@ For an explicitly requested restart of a standalone local Linux `opencode serve`
 use the [launcher](../scripts/launch-restart-server.mjs) with Node.js 22+ and `ss`:
 
 ```sh
-node "$HOME/.config/opencode/skills/opencode-debugging/scripts/launch-restart-server.mjs" http://127.0.0.1:4096 SESSION_ID
+node "$HOME/.config/opencode/skills/opencode-debugging/scripts/launch-restart-server.mjs" SESSION_ID
 ```
 
-Replace the URL and session ID. The launcher starts the [worker](../scripts/restart-server.mjs),
-which derives the directory, agent, and model from the session.
+Replace `SESSION_ID`. The launcher starts the [worker](../scripts/restart-server.mjs),
+which reads the server URL from the inherited `OPENCODE_API_URL` and derives the
+directory, agent, and model from the session. A missing or invalid URL fails preflight.
 On `{"status":"armed",...}`, **finish your response immediately**
 so the session can become idle. It waits up to 180 seconds for idle, pauses one
 second, rechecks, and restarts once with the original arguments, cwd, and environment.
