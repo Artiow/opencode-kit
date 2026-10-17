@@ -38,16 +38,11 @@ Keep unrelated prompts, credentials, and payloads out of displayed excerpts.
 
 ## Guardrails
 
-Stop before any of these:
-
-- Reading a log with `cat` or an unbounded `read` call.
-- Running a content-producing search without a match limit; count-only searches
-  are exempt.
-- Searching every log's contents before using time and file metadata.
-- Adding broad context flags such as `-C` before locating relevant line numbers.
-- Launching multiple log-content searches in parallel.
-- Raising the 20-match or 80-line caps instead of narrowing the pattern.
-- Continuing after the diagnostic question has already been answered.
+- Bound every content search with a match limit and every `read` with
+  `offset`/`limit`; count-only searches need no match limit.
+- Locate relevant line numbers before adding context such as `-C`.
+- Run log-content searches sequentially.
+- Narrow the pattern rather than raising the 20-match or 80-line caps.
 
 Exact identifiers, small files, urgency, and expected tool truncation do not
 relax these guardrails. No match establishes only absence within the verified

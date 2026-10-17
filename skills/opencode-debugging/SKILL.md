@@ -11,7 +11,7 @@ Trace observed behavior through runtime and session evidence. **A declared setti
 
 **REQUIRED:** Load `customize-opencode` when interpreting configuration/resource definitions or before proposing or applying resource changes. It owns schema, supported fields, placement, and configuration guidance; this skill owns diagnosis and verification.
 
-Load `customize-opencode` as a skill; read the bundled references below as files. Log inspection is part of this skill, not a separate skill dependency.
+Load `customize-opencode` as a skill; read the bundled references below as files.
 
 Ordinary application bugs and planned configuration changes without a diagnostic question do not trigger this skill.
 

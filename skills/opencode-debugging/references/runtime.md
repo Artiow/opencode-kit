@@ -1,13 +1,11 @@
 # Runtime Diagnostics
 
-Load `customize-opencode` for configuration semantics, schema, resource discovery
-rules, and changes. Use its schema guidance instead of inventing fields or
-copying a version-specific config reference into this skill.
+Load `customize-opencode` for configuration schema, discovery, precedence, and changes.
 
 ## Establish the Runtime
 
 Record the installed version, project directory, affected agent/session, and
-whether the observation came from the existing process or a new CLI invocation.
+process identity.
 Use `opencode --version`, `opencode --help`, and `opencode debug --help` as needed.
 Check individual subcommand help before assuming options or output schemas.
 Consult matching installed code or version-appropriate documentation for semantic
@@ -26,10 +24,8 @@ gaps; upstream documentation alone does not establish this installation's state.
 
 Filter config/agent output to the needed fields before displaying it. Do not
 print whole configs, provider credentials, environment values, or unrelated
-prompts. A field selector is useful for inspection, but is not automatically a
-test of effective behavior. Large diagnostic outputs may be incomplete: detect
-parse failures/truncation and use a narrower supported source rather than
-treating missing output as absence or repeatedly dumping the same data.
+prompts. Detect parse failures/truncation and use a narrower supported source
+rather than treating missing output as absence or repeatedly dumping the same data.
 
 ## Follow the Failing Boundary
 
@@ -42,44 +38,18 @@ Start from the observed operation and work backward only as far as needed:
 4. Sources: resource/config files and environment-provided config layers governing
    the value. Follow discovery/precedence guidance from `customize-opencode`.
 
-A new CLI process sees newly loaded resources; it cannot prove that an older
-process reloaded them. Identify which process produced each observation. For a
-historical failure, use session/event evidence; today's config is not a snapshot
-of yesterday's state. Do not add duplicate settings or disable plugins merely
-because a component is a plausible suspect.
+Identify which process produced each observation: a new CLI probe does not prove
+an existing process reloaded. Use session/event evidence for historical failures.
+Do not add duplicate settings or disable plugins without evidence.
 
-## Worked Example: A Permission Exists but Still Asks
+## Unexpected Permission Prompts
 
-First inspect the actual agent's normalized rules, not just an `allow` field in
-`debug config`. For an installation where `debug agent` emits an ordered
-`permission` array with `permission`, `pattern`, and `action` fields, this is a
-bounded inspection of the rules relevant to `customize-opencode`:
-
-```sh
-set -o pipefail
-opencode debug agent insight | node -e '
-let input = "";
-process.stdin.on("data", chunk => input += chunk);
-process.stdin.on("end", () => {
-  let agent;
-  try { agent = JSON.parse(input); }
-  catch { throw new Error("Incomplete agent JSON; use a narrower supported source"); }
-  if (!Array.isArray(agent.permission)) throw new Error("Inspect the installed rule schema");
-  const rules = agent.permission.map((rule, index) => ({ index, ...rule }));
-  console.log(JSON.stringify(rules.filter(rule =>
-    rule.permission === "*" || rule.permission === "skill"), null, 2));
-});'
-```
-
-Select **all matching rules**, including wildcard patterns, and determine the
-winner using the installed evaluator's semantics. The check succeeds only if
-the resulting decision is `allow`, not merely if an `allow` appears somewhere.
-When a setting moves between files/scopes, verify the final ordering again.
-Also identify which permission was actually requested: `skill`, `read`, and
-`external_directory` are separate checks. Session-level rules can affect the
-decision beyond the agent definition.
-
-Finally reproduce the intended skill/tool invocation in the reloaded process.
-If only the normalized rules were checked, report that level rather than
-claiming the user-visible symptom is fixed. Use the same distinction for routing,
-MCP connectivity, plugin activation, and other configuration-driven behavior.
+1. Inspect the actual agent's normalized rules with `opencode debug agent <name>`,
+   selecting relevant fields according to the installed output schema.
+2. Identify the requested permission: `skill`, `read`, and `external_directory`
+   are separate checks. Include session-level rules.
+3. Evaluate **all matching rules**, including wildcards, in their effective order
+   using the installed evaluator's semantics. An `allow` entry alone does not
+   establish an `allow` decision. Recheck ordering after moving settings between scopes.
+4. Reproduce the original invocation in the reloaded process. Report whether only
+   rules were inspected or the operation actually succeeded.
