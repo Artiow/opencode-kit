@@ -57,14 +57,15 @@ Do not add duplicate settings or disable plugins without evidence.
 ## Restart Helper
 
 For an explicitly requested restart of a standalone local Linux `opencode serve`,
-use the [helper](../scripts/restart-server.mjs) with Node.js 22+ and `ss`:
+use the [launcher](../scripts/launch-restart-server.mjs) with Node.js 22+ and `ss`:
 
 ```sh
-node "$HOME/.config/opencode/skills/opencode-debugging/scripts/restart-server.mjs" http://127.0.0.1:4096 SESSION_ID
+node "$HOME/.config/opencode/skills/opencode-debugging/scripts/launch-restart-server.mjs" http://127.0.0.1:4096 SESSION_ID
 ```
 
-Replace the URL and session ID. The helper derives the directory, agent, and model
-from the session. On `{"status":"armed",...}`, **finish your response immediately**
+Replace the URL and session ID. The launcher starts the [worker](../scripts/restart-server.mjs),
+which derives the directory, agent, and model from the session.
+On `{"status":"armed",...}`, **finish your response immediately**
 so the session can become idle. It waits up to 180 seconds for idle, pauses one
 second, rechecks, and restarts once with the original arguments, cwd, and environment.
 Resumed activity cancels the restart. After health verification, it submits the

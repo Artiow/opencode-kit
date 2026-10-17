@@ -1,14 +1,11 @@
 /**
- * @file Restart a standalone local OpenCode server and notify its session.
- * Usage: node restart-server.mjs <server-url> <session-id>
- * The launcher returns "armed"; a detached worker waits for idle, restarts the
- * standalone Linux server, and reports the result to the originating session.
+ * @file Worker that restarts a standalone local OpenCode server and notifies its session.
+ * Started by launch-restart-server.mjs with an IPC channel for the "armed" handshake.
  */
-import { execFileSync, fork, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, readFileSync, readlinkSync } from "node:fs";
 import { basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 
 const POLL_INTERVAL_MS = 250;
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -17,7 +14,6 @@ const IDLE_TIMEOUT_MS = 180_000;
 const IDLE_GRACE_MS = 1_000;
 const STOP_TIMEOUT_MS = 20_000;
 const START_TIMEOUT_MS = 30_000;
-const ARM_TIMEOUT_MS = 20_000;
 const STARTUP_CONNECTION_ERRORS = ["ECONNREFUSED", "ECONNRESET", "UND_ERR_SOCKET"];
 
 /** Poll a condition until it succeeds or times out; propagate check errors. */
@@ -198,7 +194,7 @@ async function restart(baseURL, sessionID) {
     const session = await readSessionContext(request, sessionID);
     verifyServer(server);
     await isSessionIdle(request, session);
-    process.send?.({ status: "armed" });
+    process.send({ status: "armed" });
 
     let replacement;
     try {
@@ -222,48 +218,19 @@ async function restart(baseURL, sessionID) {
     await notifySession(request, session, result);
 }
 
-/** Detach a worker, returning only after it confirms that preflight succeeded. */
-async function arm(address, sessionID) {
-    // Ignore worker stdio so the initiating tool can finish and its session can become idle.
-    const worker = fork(fileURLToPath(import.meta.url), ["--worker", address, sessionID], {
-        detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
-    });
-    let timer;
-    try {
-        await new Promise((resolve, reject) => {
-            timer = setTimeout(() => {
-                reject(new Error(`Restart helper did not arm within ${ARM_TIMEOUT_MS / 1_000} seconds`));
-            }, ARM_TIMEOUT_MS);
-            worker.once("error", reject);
-            worker.once("exit", () => reject(new Error("Restart helper exited before arming")));
-            worker.once("message", message => {
-                if (message.status === "armed") resolve();
-                else reject(new Error(message.error));
-            });
-        });
-        console.log(JSON.stringify({ status: "armed", workerPID: worker.pid, sessionID }));
-    } catch (error) {
-        worker.kill("SIGTERM");
-        throw error;
-    } finally {
-        clearTimeout(timer);
-        if (worker.connected) worker.disconnect();
-        worker.unref();
-    }
-}
-
 try {
-    const worker = process.argv[2] === "--worker";
-    const args = process.argv.slice(worker ? 3 : 2);
+    if (!process.connected) {
+        throw new Error("Start this worker through launch-restart-server.mjs");
+    }
+    const args = process.argv.slice(2);
     if (args.length !== 2 || !/^ses_[a-zA-Z0-9]+$/.test(args[1])) {
-        throw new Error("Usage: node restart-server.mjs <server-url> <session-id>");
+        throw new Error("Expected a server URL and valid session ID from launcher");
     }
     const baseURL = new URL(args[0]);
     if (baseURL.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(baseURL.hostname) || baseURL.pathname !== "/" || baseURL.search || baseURL.hash || baseURL.username || baseURL.password) {
         throw new Error("Expected a local HTTP server URL without credentials, path, or query");
     }
-    if (worker) await restart(baseURL, args[1]);
-    else await arm(baseURL.href, args[1]);
+    await restart(baseURL, args[1]);
 } catch (error) {
     if (process.connected) process.send({ error: error.message });
     console.error(error.message);
