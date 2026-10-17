@@ -1,8 +1,13 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "skill": {
-      "customize-opencode": "allow"
+  "agent": {
+    "insight": {
+      "permission": {
+        "*": "ask",
+        "skill": {
+          "customize-opencode": "allow"
+        }
+      }
     }
   },
   "mcp": {
