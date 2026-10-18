@@ -17,7 +17,10 @@ const STOP_TIMEOUT_MS = 20_000;
 const START_TIMEOUT_MS = 30_000;
 const STARTUP_CONNECTION_ERRORS = ["ECONNREFUSED", "ECONNRESET", "UND_ERR_SOCKET"];
 
-/** Poll a condition until it succeeds or times out; propagate check errors. */
+/**
+ * Poll until success or timeout after a failed check; propagate check errors.
+ * Checks are not interrupted, so success may arrive after the deadline.
+ */
 async function waitFor(description, check, milliseconds) {
     const deadline = performance.now() + milliseconds;
     while (!await check()) {
@@ -133,7 +136,10 @@ async function isSessionIdle(request, session) {
     return status.type === "idle";
 }
 
-/** Stop and replace the server once, then verify its health and listener ownership. */
+/**
+ * Stop and replace the server once, then verify its health and listener ownership.
+ * Dynamic port selection may change the port; requests still use the original URL.
+ */
 async function replaceServer(server, request, session) {
     verifyServer(server);
     process.kill(server.pid, "SIGTERM");

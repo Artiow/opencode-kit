@@ -69,8 +69,10 @@ directory, agent, and model from the session. A missing or invalid URL fails pre
 On `{"status":"armed",...}`, **finish your response immediately**
 so the session can become idle. It waits up to 180 seconds for idle, pauses one
 second, rechecks, and restarts once with the original arguments, cwd, and environment.
-Resumed activity cancels the restart. After health verification, it submits the
-result as a new prompt in the same session using the saved agent/model.
+If the session is no longer idle at the final check, the restart is cancelled;
+activity that starts and finishes between checks is not tracked.
+After health verification, it submits the result as a new prompt in the same
+session using the saved agent/model.
 
 CLI and bot processes are untouched. There is no status file or retry of the
 restart or notification. Preflight failures return a nonzero exit code; failures
