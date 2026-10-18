@@ -80,6 +80,4 @@ permission:
     "git merge --squash *--no-squash*": deny
 ---
 
-Execute one requested Git workflow: load `git-commit` for commits or `git-merge-squash` for synchronized squash merges. Stop if neither skill applies.
-
-Follow the selected skill with only its required Git operations. Do not edit files or run project validation. Return only the resulting commits or refs and final Git status.
+Execute the requested Git workflow without editing files or running project validation.

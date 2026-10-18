@@ -70,7 +70,7 @@ OPENCODE_MODEL_LIGHT="<provider>/<model>"
 
 `models.jsonc` maps agents and model settings to these capability tiers through `{env:...}` interpolation. Actual model IDs and environment values remain local.
 
-Top-level `agents/`, `skills/`, `commands/`, and `plugins/` are deployed globally. The current resources provide the `insight`, `web-research`, and restricted `git` agents plus matching Git workflow commands and skills. Resources under `.opencode/`, including `/stow-deploy` and `opencode-log-inspection`, apply only to this repository; the directory and root `opencode.jsonc` are excluded from Stow.
+Top-level `agents/`, `skills/`, `commands/`, and `plugins/` are deployed globally. The current resources provide the `insight`, `web-research`, and restricted `git` agents plus matching Git workflow commands and skills. The global `opencode-debugging` skill covers runtime diagnostics, session investigation, and bounded log inspection; it uses the built-in `customize-opencode` skill for configuration and resource guidance. Resources under `.opencode/`, including `/stow-deploy`, apply only to this repository; the directory and root `opencode.jsonc` are excluded from Stow.
 
 ## Stow
 
@@ -88,4 +88,4 @@ Deploy only after confirming that the preview contains no conflicts or unexpecte
 stow -R --no-folding -d .. -t "$HOME/.config/opencode" opencode-kit
 ```
 
-Always use `--no-folding`, investigate every conflict, and never use `stow --adopt` to overwrite unmanaged configuration. This repository excludes `node_modules`, package files, project config, `.opencode/`, tests, and `tmp/` from deployment (see [.stow-local-ignore](.stow-local-ignore)).
+Always use `--no-folding`, investigate every conflict, and never use `stow --adopt` to overwrite unmanaged configuration. This repository excludes `node_modules`, package files, project config, `.opencode/`, `.superpowers/` local state, repository documentation and license, tests, and `tmp/` from deployment (see [.stow-local-ignore](.stow-local-ignore)).
