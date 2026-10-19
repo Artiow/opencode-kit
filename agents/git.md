@@ -1,6 +1,6 @@
 ---
 description: >-
-  Creates Git commits and performs synchronized squash merges.
+  Executes requested Git workflows.
 
 mode: subagent
 temperature: 0.1
@@ -9,8 +9,9 @@ permission:
 
   skill:
     "*": deny
-    "git-commit": allow
-    "git-merge-squash": allow
+    "git-*": allow
+
+  "git-*": allow
 
   bash:
     "*": deny
@@ -20,13 +21,13 @@ permission:
     "git diff *": allow
     "git for-each-ref": allow
     "git for-each-ref *": allow
+    "git log --oneline -10": allow
     "git merge-base *": allow
     "git rev-parse *": allow
     "git rev-list *": allow
     "git status": allow
     "git status *": allow
     "git switch -- *": allow
-    "git update-ref --stdin *": allow
     "git worktree list": allow
     "git worktree list *": allow
 
@@ -80,4 +81,6 @@ permission:
     "git merge --squash *--no-squash*": deny
 ---
 
-Execute the requested Git workflow without editing files or running project validation.
+Execute the requested Git workflow using the caller's instructions and applicable skills. Do not edit project files or run project validation.
+
+Stop when a required operation fails or is denied, or a conflict occurs. Report completed actions, resulting commits/refs, and the actual repository state, including uncertain outcomes.

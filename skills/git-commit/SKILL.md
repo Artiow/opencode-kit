@@ -5,18 +5,35 @@ description: Use when staging, splitting, or creating Git commits, or when writi
 
 # Creating Git Commits
 
-Create focused commits from the current Git state and the caller's instructions.
+Create focused commits from the current Git state and the caller's instructions. Use these phases; return to the model for patch review before each commit.
 
 ## Workflow
 
-1. Run `git status --short --untracked-files=all` and read the relevant staged, unstaged, and untracked diffs. Stop for conflicts or an active Git operation.
-2. Group the changes by intent. Preserve existing staged work. With an available index, stage exact paths using `git add -- <paths>` and review `git diff --cached`; with unrelated staged work, review and commit whole paths using `git commit --only`, or stop when safe isolation requires partial paths.
-3. Check each reviewed commit patch for secrets such as credentials, private keys, or tokens. Choose a Conventional Commit message from the patch and any caller instructions, then run `git commit` with hooks enabled.
-4. Run `git status --short` and report the commit printed by `git commit`.
+1. **Inspect.** In one turn, request `git status --untracked-files=all`, `git diff`, `git diff --cached`, and `git log --oneline -10` as independent calls. Status must show no conflict or active operation. Stop if there is nothing to commit. For untracked content needed to choose groups, use `git diff --no-index -- /dev/null <path>`; exit 1 means differences, not an execution failure.
+2. **Choose.** Group changes by intent and name exact paths. Preserve unrelated staged entries. If safe isolation requires partial paths, stop.
+3. **Stage and expose the patch.** With no unrelated staged work, run one group:
 
-For a normal clean index, the command sequence is `status`, relevant `diff`, `add -- <exact-paths>`, cached `diff`, `commit`, `status`. Name every path; do not use `.`, `-A`, `-u`, or wildcard pathspecs.
+   ```sh
+   git add -- <exact-paths> && git diff --cached
+   ```
 
-Use only Git inspection and commit operations. Project tests, builds, linters, and other project validation belong to the caller.
+   With unrelated staged work, use the whole-path route: stage only selected untracked paths so Git knows them, then review `git diff HEAD -- <exact-paths>`. This is the patch that `commit --only` will take from the working tree; unrelated staged entries stay intact.
+4. **Review.** Inspect the complete commit patch, including credentials, private keys, or tokens. Choose the message from that patch, repository style, and caller instructions. This model decision separates staging from committing.
+5. **Commit and inspect the result.** Run one group with hooks enabled:
+
+   ```sh
+   git commit -m "<message>" && git status --short
+   ```
+
+   For the whole-path route, use `git commit --only -m "<message>" -- <exact-paths> && git status --short` instead. A hook/command failure stops the group; do not bypass it.
+6. **Continue or report.** For another group, return to path selection using the observed status; re-inspect changed data as needed. Report each commit printed by `git commit` and final status, including remaining work.
+
+## Supported calls and boundaries
+
+- History is limited to `git log --oneline -10`; other log forms are unavailable. Use `git branch --show-current` for the current branch and `git for-each-ref` for refs, not `git symbolic-ref` or `git branch --list`.
+- Exact paths preserve commit scope and other staged work: no `.`, wildcard pathspecs, `add -A/-u`, or `commit -a`.
+- No `--amend` (existing history), `--allow-empty` (no reviewed change), or `--no-verify` (required hooks). Do not use shell utilities or run project tests/builds/linters; project validation belongs to the caller.
+- A denied required call ends this workflow with the limitation and actual state; do not probe alternative spellings.
 
 ## Conventional Commits Contract
 

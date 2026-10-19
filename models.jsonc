@@ -7,6 +7,10 @@
    * OPENCODE_MODEL_LIGHT — the lightweight model for lightweight tasks.
    */
 
+  "permission": {
+    "git-*": "deny"
+  },
+
   "agent": {
     // primary
     "build": {
