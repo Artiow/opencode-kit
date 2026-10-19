@@ -4,6 +4,6 @@ agent: git
 subtask: true
 ---
 
-Load `git-merge-squash` and follow its argument resolution and synchronized squash workflow. Pass these arguments to the skill:
+Load `git-merge-squash` and follow its instructions. Interpret the command arguments below using the branch-resolution rules described in the skill:
 
 $ARGUMENTS
