@@ -6,6 +6,7 @@
 ^/\.opencode$
 ^/\.superpowers$
 ^/AGENTS\.md$
+^/CONTRIBUTING\.md$
 ^/LICENSE$
 ^/README\.md$
 ^/node_modules$

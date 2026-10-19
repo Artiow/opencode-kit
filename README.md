@@ -2,6 +2,8 @@
 
 Version-controlled global OpenCode extensions deployed under `~/.config/opencode/` with GNU Stow.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for coding conventions, examples, and validation requirements.
+
 ## Preconditions
 
 - [GNU Stow](https://www.gnu.org/software/stow/) is required to deploy the global resources.
