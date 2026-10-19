@@ -5,8 +5,6 @@ description: >-
 
 mode: primary
 permission:
-  "*": ask
-
   "duckduckgo_*": deny
   edit: deny
 
@@ -27,7 +25,6 @@ permission:
 
   bash:
     "*": ask
-    "python *": deny
     "file *": allow
     "ls*": allow
     "pwd*": allow
