@@ -36,9 +36,9 @@ Configuration precedence is low to high:
 - Root `opencode.jsonc` contains portable shared settings. `.opencode/opencode.json(c)` is a Git-ignored local override and must not duplicate shared settings.
 - Neither project config is deployed globally: `.stow-local-ignore` must exclude root `opencode.jsonc` and all of `.opencode/`.
 
-## JavaScript and TypeScript
+## Code Guidelines
 
-Before writing or reviewing JavaScript or TypeScript, read and follow [CONTRIBUTING.md](CONTRIBUTING.md) for code style, examples, dependency handling, and required checks.
+Before writing or reviewing code, read and follow [CONTRIBUTING.md](CONTRIBUTING.md) for code style, examples, dependency handling, and required checks.
 
 ## Stow
 
