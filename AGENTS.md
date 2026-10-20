@@ -36,12 +36,9 @@ Configuration precedence is low to high:
 - Root `opencode.jsonc` contains portable shared settings. `.opencode/opencode.json(c)` is a Git-ignored local override and must not duplicate shared settings.
 - Neither project config is deployed globally: `.stow-local-ignore` must exclude root `opencode.jsonc` and all of `.opencode/`.
 
-## TypeScript
+## Code Guidelines
 
-- Use npm and update `package.json` and `package-lock.json` together.
-- Run `npm run typecheck` after changing TypeScript included by `tsconfig.json`, including tests.
-- Run `npm test` after changing plugins or their tests.
-- Before adding runtime dependencies to global resources, check the dependency-loading guidance in `customize-opencode`.
+Before writing or reviewing code, read and follow [CONTRIBUTING.md](CONTRIBUTING.md). Reuse its contents while they remain available in context and unchanged.
 
 ## Stow
 

@@ -32,6 +32,7 @@ async function installPlugin(root: string, provisionDependencies: boolean) {
 }
 
 type RunOptions = {
+  timeout?: number
   config?: object
   env?: Record<string, string>
   installSuperpowersAgent?: boolean
@@ -49,8 +50,10 @@ export async function runOpenCode(args: string[], options: RunOptions = {}) {
 
   try {
     await options.setup?.({ root, home })
-    return await execFileAsync(opencodeBin, args, {
+    const pending = execFileAsync(opencodeBin, args, {
       cwd: root,
+      timeout: options.timeout,
+      killSignal: "SIGKILL",
       env: {
         PATH: process.env.PATH,
         HOME: home,
@@ -68,6 +71,9 @@ export async function runOpenCode(args: string[], options: RunOptions = {}) {
         ...options.env,
       },
     })
+    // `opencode run` reads redirected stdin before sending its prompt.
+    pending.child.stdin?.end()
+    return await pending
   } finally {
     await rm(root, { recursive: true, force: true })
   }

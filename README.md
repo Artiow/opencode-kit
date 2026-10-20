@@ -2,6 +2,8 @@
 
 Version-controlled global OpenCode extensions deployed under `~/.config/opencode/` with GNU Stow.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for coding conventions, examples, and validation requirements.
+
 ## Preconditions
 
 - [GNU Stow](https://www.gnu.org/software/stow/) is required to deploy the global resources.
@@ -70,7 +72,17 @@ OPENCODE_MODEL_LIGHT="<provider>/<model>"
 
 `models.jsonc` maps agents and model settings to these capability tiers through `{env:...}` interpolation. Actual model IDs and environment values remain local.
 
-Top-level `agents/`, `skills/`, `commands/`, and `plugins/` are deployed globally. The current resources provide the `insight`, `web-research`, and restricted `git` agents plus matching Git workflow commands and skills. The global `opencode-debugging` skill covers runtime diagnostics, session investigation, and bounded log inspection; it uses the built-in `customize-opencode` skill for configuration and resource guidance. Resources under `.opencode/`, including `/stow-deploy`, apply only to this repository; the directory and root `opencode.jsonc` are excluded from Stow.
+Top-level `agents/`, `skills/`, `tools/`, `commands/`, and `plugins/` are deployed globally. The current resources provide the `insight`, `web-research`, and restricted `git` agents plus matching Git workflow commands and skills. The global `opencode-debugging` skill covers runtime diagnostics, session investigation, and bounded log inspection; it uses the built-in `customize-opencode` skill for configuration and resource guidance. Resources under `.opencode/`, including `/stow-deploy`, apply only to this repository; the directory and root `opencode.jsonc` are excluded from Stow.
+
+## Git workflows
+
+`/git-commit` and `/git-merge-squash` load their skills before Git operations. Skills define canonical calls and model decision boundaries; the agent allows exactly `git log --oneline -10` for history inspection. Commit staging/review and commit/status are grouped without merging across patch review. Existing unrelated staged work uses the whole-path commit route.
+
+[`tools/git-backup-pair.ts`](tools/git-backup-pair.ts) is the only backup writer for the Git agent. The model selects source/target and backup names first, then supplies recorded tips and an ordered source/target backup pair. The tool performs guards, one checked atomic transaction, and readback. It does not select a branch or backup strategy, retry, or repair state. Errors distinguish writes not started, committed writes, and unknown outcomes.
+
+The tool imports the supported `@opencode-ai/plugin/tool` helper and Node built-ins. Ensure `@opencode-ai/plugin` is available in the global config's runtime dependencies (the development dependency here does not provision that directory). When needed, add `"@opencode-ai/plugin": "1.18.31"` to the existing unmanaged global `package.json` alongside its other dependencies; do not replace that file with this repository's package files. OpenCode installs config dependencies at startup. Restart after deploying changed agents, skills, commands or tools.
+
+The globally loaded [`models.jsonc`](models.jsonc) sets `permission: { "git-*": "deny" }`. The Git agent overrides it with `"git-*": allow`, using OpenCode's standard permission inheritance to exclude Git-only tool schemas from other agents' model contexts. Keep Git-specific tool names and Git workflow skill names under `git-*`; new names in that namespace need no prompt or per-name permission changes. Workflow procedures stay in skills, while the Git agent's prompt remains general.
 
 ## Stow
 
