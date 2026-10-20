@@ -38,7 +38,7 @@ Configuration precedence is low to high:
 
 ## Code Guidelines
 
-Before writing or reviewing code, read and follow [CONTRIBUTING.md](CONTRIBUTING.md) for code style, examples, dependency handling, and required checks.
+Before writing or reviewing code, read and follow [CONTRIBUTING.md](CONTRIBUTING.md). Reuse its contents while they remain available in context and unchanged.
 
 ## Stow
 

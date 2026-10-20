@@ -17,7 +17,7 @@ export default tool({
         backups: tool.schema.array(backupEntrySchema).length(2).describe("Exactly two entries: source backup first, target backup second"),
     },
     async execute(args, context) {
-        let phase = "validate"
+        let phase = "declare"
         let writeState: "not_started" | "unknown" | "committed" = "not_started"
         const steps: { operation: string; duration_ms: number; ok: boolean }[] = []
         const refs = [args.source_ref, args.target_ref, ...args.backups.map(({ ref }) => ref)]
@@ -47,10 +47,17 @@ export default tool({
         }
 
         try {
+            phase = "validate"
             context.abort.throwIfAborted()
-            require(refs.every((ref) => ref.startsWith("refs/heads/") && !/[\s\0]/.test(ref)), "Use full local branch refs without whitespace")
             require(new Set(refs).size === 4, "Working and backup refs must all be distinct")
-            require(args.backups.every(({ ref }) => ref.startsWith("refs/heads/bak/")), "Backups must be under refs/heads/bak/")
+            require(
+                refs.every((ref) => ref.startsWith("refs/heads/") && !/[\s\0]/.test(ref)),
+                "Use full local branch refs without whitespace"
+            )
+            require(
+                args.backups.every(({ ref }) => ref.startsWith("refs/heads/bak/")),
+                "Backups must be under refs/heads/bak/"
+            )
             require(
                 [...tips, ...args.backups.flatMap(({ old_tip }) => old_tip === null ? [] : [old_tip])].every((tip) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tip) && !/^0+$/.test(tip)),
                 "Use full nonzero object IDs"
@@ -120,7 +127,7 @@ export default tool({
                 metadata: { steps },
             }
         } catch (error) {
-            const errorMessage = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
+            const errorMessage = error instanceof Error ? error.message : String(error)
             return {
                 output: JSON.stringify({
                     status: "error",
